@@ -1,3 +1,4 @@
+import { frequency, type RangeMode } from "./model";
 let context: AudioContext | undefined;
 export async function unlock() {
   context ??= new AudioContext();
@@ -32,8 +33,8 @@ export function tone(
   oscillator.stop(t + duration + 0.02);
 }
 export const cue = () => tone(1100, 0.07, 0.025);
-export const playNote = (note: number) =>
-  tone(440 * 2 ** ((60 + note - 69) / 12), 1, 0.12);
+export const playNote = (note: number, range: RangeMode = "high") =>
+  tone(frequency(note, range), 1, 0.12);
 export function feedback(correct: boolean) {
   if (correct) {
     tone(784, 0.24);

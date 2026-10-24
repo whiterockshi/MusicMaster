@@ -1,5 +1,5 @@
 import { openDB } from "idb";
-import { empty, validate, type Data } from "./model";
+import { empty, validate, migrateReviews, type Data } from "./model";
 let database: ReturnType<typeof openDB> | undefined;
 const db = () =>
   (database ??= openDB("musicsensor", 1, {
@@ -10,7 +10,7 @@ const db = () =>
 export async function load(): Promise<Data> {
   const d = await db();
   const value = await d.get("state", "main");
-  return value ? validate(value) : empty();
+  return value ? migrateReviews(validate(value)) : empty();
 }
 export async function save(value: Data) {
   const d = await db();

@@ -123,3 +123,138 @@ describe("Lv1 session coverage", () => {
     }
   });
 });
+
+describe("settings and analysis reset", () => {
+  it("supports old backups and preserves settings and reset markers in new backups", async () => {
+    const { resetAnalysis, DEFAULT_SETTINGS } = await import("../src/model");
+    expect(validate(setup()).settings).toBeUndefined();
+    for (const invalid of [null, false, [], 42]) {
+      expect(() => validate({ ...setup(), settings: invalid })).toThrow();
+      expect(() => validate({ ...setup(), analysisResets: invalid })).toThrow();
+    }
+    const d = resetAnalysis(
+      {
+        ...setup(),
+        settings: { ...DEFAULT_SETTINGS, range: "bass", notation: "flat" },
+      },
+      1,
+    );
+    expect(validate(JSON.parse(JSON.stringify(d)))).toEqual(d);
+    expect(() =>
+      validate({ ...d, settings: { range: "invalid", notation: "flat" } }),
+    ).toThrow();
+    expect(() =>
+      validate({ ...d, analysisResets: { 1: { at: "bad", counts: {} } } }),
+    ).toThrow();
+  });
+  it("resets only recent statistics and includes new answers in an existing session even at the same timestamp", async () => {
+    const { resetAnalysis, analysisAttempts } = await import("../src/model");
+    let d = record(setup(), a("one", 1, 1));
+    d = resetAnalysis(d, 1);
+    expect(analysisAttempts(d, 1)).toHaveLength(1);
+    expect(analysisAttempts(d, 1, true)).toHaveLength(0);
+    d = record(d, a("two", 1, 0));
+    expect(analysisAttempts(d, 1)).toHaveLength(2);
+    expect(analysisAttempts(d, 1, true).map((a) => a.id)).toEqual(["two"]);
+    const reset = resetAnalysis(d, 1);
+    expect(analysisAttempts(reset, 1, true)).toHaveLength(0);
+    expect(reset.sessions).toEqual(d.sessions);
+    expect(reset.reviews).toEqual(d.reviews);
+  });
+  it("synthesizes each range one octave apart without changing pitch class", async () => {
+    const { frequency } = await import("../src/model");
+    for (let note = 0; note < 12; note++) {
+      expect(frequency(note, "high")).toBeCloseTo(frequency(note, "low") * 2);
+      expect(frequency(note, "low")).toBeCloseTo(frequency(note, "bass") * 2);
+    }
+    expect(frequency(9, "high")).toBe(440);
+    expect(frequency(0, "bass")).toBeCloseTo(65.4064, 3);
+  });
+});
+
+describe("range-aware review and statistics", () => {
+  it("separates same pitch by range and resolves only the original range", () => {
+    let d = setup();
+    d.sessions.push({ ...s(), id: "bass", range: "bass" });
+    d = record(d, a("high-error", 9, 0));
+    d = record(d, { ...a("bass-error", 9, 0), sessionId: "bass" });
+    expect(d.reviews).toHaveLength(2);
+    d.sessions.push({
+      ...s(),
+      id: "review",
+      mode: "review",
+      total: 2,
+      range: "high",
+    });
+    d = record(d, {
+      ...a("review-bass", 9, 9, "review"),
+      sessionId: "review",
+      range: "bass",
+    });
+    expect(d.reviews.find((r) => r.range === "bass")?.pending).toBe(false);
+    expect(d.reviews.find((r) => r.range === "high")?.pending).toBe(true);
+  });
+  it("rebuilds legacy review entries from actual session ranges and preserves solved history", async () => {
+    const { migrateReviews } = await import("../src/model");
+    const d = setup();
+    d.sessions[0].attempts = [a("high-error", 9, 0)];
+    d.sessions.push({
+      ...s(),
+      id: "bass",
+      range: "bass",
+      attempts: [{ ...a("bass-error", 9, 0), sessionId: "bass" }],
+    });
+    d.sessions.push({
+      ...s(),
+      id: "review",
+      mode: "review",
+      attempts: [
+        {
+          ...a("solved", 9, 9, "review"),
+          sessionId: "review",
+          at: "2026-10-24T06:00:00Z",
+        },
+      ],
+    });
+    d.reviews = [
+      {
+        note: 9,
+        first: "2026-10-24T05:01:00Z",
+        last: "2026-10-24T05:01:00Z",
+        count: 2,
+        pending: false,
+      },
+    ];
+    const upgraded = migrateReviews(validate(d));
+    expect(upgraded.reviews.find((r) => r.range === "high")?.pending).toBe(
+      false,
+    );
+    expect(upgraded.reviews.find((r) => r.range === "bass")?.pending).toBe(
+      true,
+    );
+    expect(migrateReviews(upgraded)).toEqual(upgraded);
+    expect(validate(upgraded)).toEqual(upgraded);
+  });
+  it("separates graph, analysis and reset by range, retaining legacy reset boundaries", async () => {
+    const { analysisAttempts, resetAnalysis } = await import("../src/model");
+    const d = setup();
+    d.sessions[0].status = "complete";
+    d.sessions[0].attempts = [a("high", 0, 0)];
+    d.sessions.push({
+      ...s(),
+      id: "bass",
+      range: "bass",
+      status: "complete",
+      attempts: [{ ...a("bass", 0, 1), sessionId: "bass" }],
+    });
+    expect(daily(d, 1, "high")[0].points).toBe(5);
+    expect(daily(d, 1, "bass")[0].points).toBe(0);
+    expect(daily(d, 2, "bass")).toEqual([]);
+    const reset = resetAnalysis(d, 1, "bass");
+    expect(analysisAttempts(reset, 1, true, "bass")).toHaveLength(0);
+    expect(analysisAttempts(reset, 1, true, "high")).toHaveLength(1);
+    expect(analysisAttempts(resetAnalysis(d, 1), 1, true, "bass")).toHaveLength(
+      0,
+    );
+  });
+});

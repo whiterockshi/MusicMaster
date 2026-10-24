@@ -1,0 +1,7 @@
+# Range-aware review and evaluation — 2026-10-24
+
+Review items now use pitch class plus original range; list/history show octave and mode (e.g. A2（ベース）). Review playback follows each item's original range, independently of current settings. Answers store range for mixed review sessions. Existing pitch-only review entries are reconstructed chronologically from recorded attempts and session ranges; sessions without range default to high. Orphan historical items are preserved with the high fallback. New entries have explicit ranges so migration is idempotent. Review capacity increased to 36; ordinary sessions remain exactly 20 questions.
+
+Calendar graph has level and range filters for nine combinations; Lv2/3 remain unimplemented and correctly show no data. Daily session rows show range. Analysis and reset baselines are scoped by level/range, with fallback to previous level-only reset markers. Accuracy bars removed; percentages/counts retained. High guitar label normalized to Highギター.
+
+Validation: unit suite 15 passed; TypeScript/production build passed; Chromium Playwright suite 7 passed. Added checks for range-specific review resolution, migration/idempotence, range-specific daily aggregation/reset, original 110/220/440 Hz A playback in mixed review, scoped analysis and all nine graph selections. Mobile review and analysis screenshots inspected; adjusted long review labels to avoid awkward wrapping. No iPhone acoustic validation performed.
