@@ -6,6 +6,7 @@ import {
   record,
   score,
   shuffle,
+  levelOneQuestions,
   daily,
   dayKey,
   validate,
@@ -74,6 +75,7 @@ function App() {
   const [volume, setVolume] = useState(true);
   const [date, setDate] = useState(dayKey(new Date().toISOString()));
   const [month, setMonth] = useState(date.slice(0, 7));
+  const [analysisLevel, setAnalysisLevel] = useState(1);
   const dataRef = useRef(data);
   const generation = useRef(0);
   const busy = useRef(false);
@@ -176,9 +178,7 @@ function App() {
       });
       setSessionId(s.id);
       setQuestions(
-        review
-          ? shuffle(pending.map((r) => r.note))
-          : Array.from({ length: 20 }, () => Math.floor(Math.random() * 12)),
+        review ? shuffle(pending.map((r) => r.note)) : levelOneQuestions(),
       );
       setIndex(0);
       setPhase("ready");
@@ -419,7 +419,7 @@ function App() {
             <span className="eyebrow">AVAILABLE</span>
             <h2>Lv1　単音</h2>
             <p>
-              C4〜B4の12音からランダムに出題。
+              C4〜B4の全12音が必ず出題されます（各1〜2回）。
               <br />
               聞こえた音をCDEのボタンで回答します。
             </p>
@@ -534,44 +534,66 @@ function App() {
           <p>
             通常練習の有効回答を集計します。未回答・復習は含みません。5回未満の音はデータ不足です。
           </p>
-          {NOTES.map((note, n) => {
-            const a = data.sessions
-              .filter((s) => s.mode === "normal")
-              .flatMap((s) => s.attempts)
-              .filter((a) => a.note === n && a.answer !== null);
-            const correct = a.filter((a) => a.answer === n).length;
-            const wrong = a.filter((a) => a.answer !== n);
-            return (
-              <section key={note}>
-                <div className="row">
-                  <strong>{note}</strong>
-                  <span>
-                    {a.length
-                      ? Math.round((correct / a.length) * 100) + "%"
-                      : "—"}
+          <div
+            className="level-filters"
+            role="group"
+            aria-label="分析するレベル"
+          >
+            {[1, 2, 3].map((level) => (
+              <button
+                key={level}
+                aria-pressed={analysisLevel === level}
+                onClick={() => setAnalysisLevel(level)}
+              >
+                Lv{level}
+              </button>
+            ))}
+          </div>
+          <h2>Lv{analysisLevel}</h2>
+          {analysisLevel !== 1 && (
+            <section>
+              Lv{analysisLevel}のゲームと分析はベータ5で追加予定です。
+            </section>
+          )}
+          {analysisLevel === 1 &&
+            NOTES.map((note, n) => {
+              const a = data.sessions
+                .filter((s) => s.mode === "normal" && s.level === analysisLevel)
+                .flatMap((s) => s.attempts)
+                .filter((a) => a.note === n && a.answer !== null);
+              const correct = a.filter((a) => a.answer === n).length;
+              const wrong = a.filter((a) => a.answer !== n);
+              return (
+                <section key={note}>
+                  <div className="row">
+                    <strong>{note}</strong>
+                    <span>
+                      {a.length
+                        ? Math.round((correct / a.length) * 100) + "%"
+                        : "—"}
+                      <small>
+                        {a.length}回答 {a.length < 5 ? "· データ不足" : ""}
+                      </small>
+                    </span>
+                  </div>
+                  <div className="bar">
+                    <i
+                      style={{
+                        width: `${a.length ? (correct / a.length) * 100 : 0}%`,
+                      }}
+                    />
+                  </div>
+                  {wrong.length > 0 && (
                     <small>
-                      {a.length}回答 {a.length < 5 ? "· データ不足" : ""}
+                      誤回答：
+                      {[...new Set(wrong.map((a) => NOTES[a.answer!]))].join(
+                        " / ",
+                      )}
                     </small>
-                  </span>
-                </div>
-                <div className="bar">
-                  <i
-                    style={{
-                      width: `${a.length ? (correct / a.length) * 100 : 0}%`,
-                    }}
-                  />
-                </div>
-                {wrong.length > 0 && (
-                  <small>
-                    誤回答：
-                    {[...new Set(wrong.map((a) => NOTES[a.answer!]))].join(
-                      " / ",
-                    )}
-                  </small>
-                )}
-              </section>
-            );
-          })}
+                  )}
+                </section>
+              );
+            })}
           <p className="muted">
             AIによる解説は未導入です。JSON/CSVを手動で共有して分析できます。
           </p>
@@ -615,7 +637,7 @@ function App() {
                 (_, i) => {
                   const key = month + "-" + String(i + 1).padStart(2, "0");
                   const count = data.sessions.filter(
-                    (s) => dayKey(s.started) === key,
+                    (s) => s.mode === "normal" && dayKey(s.started) === key,
                   ).length;
                   return (
                     <button
@@ -633,10 +655,11 @@ function App() {
             </div>
           </section>
           <h2>{date} のセッション</h2>
-          {data.sessions.filter((s) => dayKey(s.started) === date).length ===
-            0 && <p>この日の記録はありません。</p>}
+          {data.sessions.filter(
+            (s) => s.mode === "normal" && dayKey(s.started) === date,
+          ).length === 0 && <p>この日の記録はありません。</p>}
           {data.sessions
-            .filter((s) => dayKey(s.started) === date)
+            .filter((s) => s.mode === "normal" && dayKey(s.started) === date)
             .map((s) => (
               <section className="row" key={s.id}>
                 <span>
