@@ -2,12 +2,25 @@ import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import {
   NOTES,
+  CHORD_KINDS,
+  type ChordKind,
+  type Level,
+  type Question,
+  type Attempt,
+  questionKey,
+  questionLabel,
+  generateQuestions,
+  attemptPoints,
+  fullyCorrect,
+  unanswered,
+  hasWrongAnswer,
+  analysisBuckets,
+  spokenQuestion,
   FLAT_NOTES,
   RANGES,
   DEFAULT_SETTINGS,
   analysisAttempts,
   analysisResetFor,
-  spokenNote,
   migrateReviews,
   type RangeMode,
   resetAnalysis,
@@ -16,7 +29,6 @@ import {
   record,
   score,
   shuffle,
-  levelOneQuestions,
   daily,
   dayKey,
   validate,
@@ -24,7 +36,7 @@ import {
   type Session,
 } from "./model";
 import { load, save } from "./storage";
-import { unlock, cue, playNote, feedback, speak, stopAudio } from "./audio";
+import { unlock, cue, playQuestion, feedback, speak, stopAudio } from "./audio";
 import "./style.css";
 type Page =
   | "home"
@@ -80,19 +92,63 @@ function App() {
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
   const [sessionId, setSessionId] = useState("");
-  const [questions, setQuestions] = useState<
-    { note: number; range: RangeMode }[]
-  >([]);
+  const [questions, setQuestions] = useState<Question[]>([]);
+  const [formNotes, setFormNotes] = useState<(number | null)[]>([null, null]);
+  const [answerSlot, setAnswerSlot] = useState(0);
+  const [formChord, setFormChord] = useState<ChordKind | null>(null);
+  const form = useRef<{ notes: (number | null)[]; chord: ChordKind | null }>({
+    notes: [null, null],
+    chord: null,
+  });
+  const [lastAttempt, setLastAttempt] = useState<Attempt | null>(null);
+  function resetForm() {
+    form.current = { notes: [null, null], chord: null };
+    setFormNotes([null, null]);
+    setFormChord(null);
+    setAnswerSlot(0);
+    setLastAttempt(null);
+  }
+  function chooseNote(note: number) {
+    const level = questions[index].level ?? 1;
+    if (level === 1) {
+      void submit(note);
+      return;
+    }
+    const notes = [...form.current.notes];
+    notes[level === 2 ? answerSlot : 0] = note;
+    form.current = { ...form.current, notes };
+    setFormNotes(notes);
+    if (level === 2) setAnswerSlot(1);
+  }
+  function chooseChord(chord: ChordKind) {
+    form.current = { ...form.current, chord };
+    setFormChord(chord);
+  }
+  function describeQuestion(q: {
+    note: number;
+    level?: Level;
+    range?: RangeMode;
+    secondNote?: number;
+    chord?: ChordKind;
+  }) {
+    const range = q.range ?? "high";
+    const octave = RANGES[range].octave;
+    const label =
+      (q.level ?? 1) === 2
+        ? `${noteNames[q.note]}${octave} → ${noteNames[q.secondNote!]}${octave}`
+        : `${noteNames[q.note]}${octave}${q.chord ?? ""}`;
+    return `${label}（${RANGES[range].label}）`;
+  }
+
   const [index, setIndex] = useState(0);
   const [phase, setPhase] = useState<Phase>("ready");
   const [remaining, setRemaining] = useState(8);
-  const [answer, setAnswer] = useState<number | null>(null);
   const [volume, setVolume] = useState(true);
   const [date, setDate] = useState(dayKey(new Date().toISOString()));
   const [month, setMonth] = useState(date.slice(0, 7));
-  const [analysisLevel, setAnalysisLevel] = useState(1);
+  const [analysisLevel, setAnalysisLevel] = useState<Level>(1);
   const [analysisRange, setAnalysisRange] = useState<RangeMode>("high");
-  const [graphLevel, setGraphLevel] = useState(1);
+  const [graphLevel, setGraphLevel] = useState<Level>(1);
   const [graphRange, setGraphRange] = useState<RangeMode>("high");
   const dataRef = useRef(data);
   const generation = useRef(0);
@@ -184,11 +240,11 @@ function App() {
         8 - Math.floor((Date.now() - started.current) / 1000),
       );
       setRemaining(left);
-      if (left === 0) void submit(null);
+      if (left === 0) void submit(null, null, null, true);
     }, 100);
     return () => clearInterval(timer);
   }, [phase, index, sessionId]);
-  async function start(review = false) {
+  async function start(review = false, level: Level = 1) {
     if (busy.current) return;
     busy.current = true;
     try {
@@ -201,7 +257,7 @@ function App() {
         status: "active",
         mode: review ? "review" : "normal",
         total: review ? pending.length : 20,
-        level: 1,
+        level,
         range: settings.range,
         attempts: [],
       };
@@ -214,17 +270,20 @@ function App() {
       setQuestions(
         review
           ? shuffle(
-              pending.map((r) => ({ note: r.note, range: r.range ?? "high" })),
+              pending.map((r) => ({
+                note: r.note,
+                range: r.range ?? "high",
+                level: r.level ?? 1,
+                secondNote: r.secondNote,
+                chord: r.chord,
+              })),
             )
-          : levelOneQuestions().map((note) => ({
-              note,
-              range: settings.range,
-            })),
+          : generateQuestions(level, settings.range),
       );
+      resetForm();
       setIndex(0);
       setPhase("ready");
       setPage("game");
-      setAnswer(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "開始できません");
     } finally {
@@ -252,8 +311,14 @@ function App() {
       await wait(2000);
       if (token !== generation.current) return;
       setPhase("playing");
-      if (volume) playNote(questions[index].note, questions[index].range);
-      await wait(1100);
+      const duration = volume
+        ? playQuestion(questions[index])
+        : (questions[index].level ?? 1) === 3
+          ? 4460
+          : (questions[index].level ?? 1) === 2
+            ? 2450
+            : 1100;
+      await wait(duration);
       if (token !== generation.current) return;
       if (volume) cue();
       await wait(150);
@@ -281,15 +346,21 @@ function App() {
         await unlock();
         if (token !== generation.current) return;
         await speak(
-          `正解は${spokenNote(questions[index].note, settings.notation)}でした`,
+          `正解は${spokenQuestion(questions[index], settings.notation)}でした`,
         );
       }
       if (token !== generation.current) return;
       if (volume) cue();
       await wait(2000);
       if (token !== generation.current) return;
-      if (volume) playNote(questions[index].note, questions[index].range);
-      await wait(1100);
+      const duration = volume
+        ? playQuestion(questions[index])
+        : (questions[index].level ?? 1) === 3
+          ? 4460
+          : (questions[index].level ?? 1) === 2
+            ? 2450
+            : 1100;
+      await wait(duration);
     } catch {
       setError("正解音を再生できません。もう一度聴くボタンで再試行できます。");
     } finally {
@@ -300,34 +371,52 @@ function App() {
       }
     }
   }
-  async function submit(value: number | null) {
+  async function submit(
+    value: number | null,
+    second: number | null = null,
+    chord: ChordKind | null = null,
+    useDraft = false,
+  ) {
     if (phaseRef.current !== "answer" || busy.current) return;
     busy.current = true;
     setPhase("feedback");
     phaseRef.current = "feedback";
-    setAnswer(value);
-    if (volume) feedback(value === questions[index].note);
-    const a = {
+    const q = questions[index];
+    if ((q.level ?? 1) === 2 && useDraft) {
+      value = form.current.notes[0];
+      second = form.current.notes[1];
+    }
+    if (q.level === 3 && (value === null || chord === null)) {
+      value = null;
+      chord = null;
+    }
+    const a: Attempt = {
       id: `${sessionId}:${index}`,
       sessionId,
-      note: questions[index].note,
-      range: questions[index].range,
+      note: q.note,
+      range: q.range,
+      level: q.level ?? 1,
+      secondNote: q.secondNote,
+      secondAnswer: q.level === 2 ? second : undefined,
+      chord: q.chord,
+      answerChord: q.level === 3 ? chord : undefined,
       answer: value,
       at: new Date().toISOString(),
       elapsed: Date.now() - started.current,
       mode: session!.mode,
     };
+    setLastAttempt(a);
+    if (volume) {
+      if (attemptPoints(a) === 2 && !hasWrongAnswer(a)) cue();
+      else feedback(fullyCorrect(a));
+    }
     try {
       await persist(record(dataRef.current, a));
     } catch {
     } finally {
       busy.current = false;
     }
-    if (
-      value !== null &&
-      value !== questions[index].note &&
-      phaseRef.current === "feedback"
-    )
+    if (hasWrongAnswer(a) && phaseRef.current === "feedback")
       await replayCorrect();
   }
   async function next() {
@@ -337,7 +426,7 @@ function App() {
       if (index + 1 < questions.length) {
         setIndex(index + 1);
         setPhase("ready");
-        setAnswer(null);
+        resetForm();
       } else {
         const d = structuredClone(dataRef.current);
         const s = d.sessions.find((s) => s.id === sessionId)!;
@@ -347,7 +436,7 @@ function App() {
         setPage("result");
         if (volume)
           void speak(
-            `${format(s.started)}に始めた回は、${s.attempts.filter((a) => a.answer === a.note).length}問正解、${score(s)}点です。`,
+            `${format(s.started)}に始めた回は、${s.attempts.filter((a) => fullyCorrect(a, a.level ?? s.level)).length}問正解、${score(s)}点です。`,
           );
       }
     } catch {
@@ -403,7 +492,7 @@ function App() {
       </main>
     );
   return (
-    <main>
+    <main className={page === "game" ? "game-page" : undefined}>
       <header>
         <button
           className="brand"
@@ -411,7 +500,7 @@ function App() {
         >
           ◖ MusicSensor
         </button>
-        <span className="badge">BETA 4</span>
+        <span className="badge">BETA 5</span>
       </header>
       <div className="topline">
         <span>PERSONAL EAR TRAINING</span>
@@ -525,9 +614,9 @@ function App() {
               Lv1を開始する →
             </button>
           </section>
-          {[2, 3].map((n) => (
-            <section className="disabled" key={n}>
-              <span className="badge">ベータ5で追加予定</span>
+          {([2, 3] as Level[]).map((n) => (
+            <section key={n}>
+              <span className="badge">AVAILABLE</span>
               <h2>
                 Lv{n}　{n === 2 ? "2音の聞き分け" : "コード"}
               </h2>
@@ -536,7 +625,9 @@ function App() {
                   ? "順番に鳴る2音を回答。部分点あり。"
                   : "分散和音と同時和音を聞いて回答。"}
               </p>
-              <button disabled>準備中</button>
+              <button className="primary" onClick={() => void start(false, n)}>
+                Lv{n}を開始する →
+              </button>
             </section>
           ))}
         </>
@@ -568,15 +659,8 @@ function App() {
             <section>復習待ちはありません。Lv1で練習しましょう。</section>
           )}
           {pending.map((r) => (
-            <section
-              className="row review-item"
-              key={`${r.range ?? "high"}:${r.note}`}
-            >
-              <strong>
-                {noteNames[r.note]}
-                {RANGES[r.range ?? "high"].octave}（
-                {RANGES[r.range ?? "high"].label}）
-              </strong>
+            <section className="row review-item" key={questionKey(r)}>
+              <strong>{describeQuestion(r)}</strong>
               <span>
                 誤答 {r.count}回<small>最後の誤答 {format(r.last)}</small>
               </span>
@@ -593,11 +677,9 @@ function App() {
         <>
           {data.reviews.length === 0 && <p>まだ誤答履歴はありません。</p>}
           {data.reviews.map((r) => (
-            <section key={`${r.range ?? "high"}:${r.note}`}>
+            <section key={questionKey(r)}>
               <h2>
-                {noteNames[r.note]}
-                {RANGES[r.range ?? "high"].octave}（
-                {RANGES[r.range ?? "high"].label}）{" "}
+                {describeQuestion(r)}{" "}
                 <span className="badge">
                   {r.pending ? "復習待ち" : "解消済み"}
                 </span>
@@ -609,19 +691,20 @@ function App() {
                 .flatMap((s) =>
                   s.attempts.map((a) => ({
                     ...a,
+                    level: a.level ?? s.level,
                     range: a.range ?? s.range ?? "high",
                   })),
                 )
                 .filter(
-                  (a) =>
-                    a.note === r.note &&
-                    a.range === (r.range ?? "high") &&
-                    a.answer !== null &&
-                    a.answer !== a.note,
+                  (a) => questionKey(a) === questionKey(r) && hasWrongAnswer(a),
                 )
                 .map((a) => (
                   <p key={a.id}>
-                    {format(a.at)}　回答 {noteNames[a.answer!]}{" "}
+                    {format(a.at)}　回答{" "}
+                    {a.answer === null ? "—" : noteNames[a.answer]}
+                    {a.level === 2
+                      ? ` → ${a.secondAnswer === null ? "—" : noteNames[a.secondAnswer!]}`
+                      : (a.answerChord ?? "")}{" "}
                     <small>{a.mode === "review" ? "復習" : "通常"}</small>
                   </p>
                 ))}
@@ -632,7 +715,7 @@ function App() {
       {page === "analysis" && (
         <>
           <p>
-            通常練習の有効回答を集計します。未回答・復習は含みません。5回未満の音はデータ不足です。
+            通常練習の有効回答を集計します。未回答・復習は含みません。Lv2は各音、Lv3はコードごとの集計です。5回答未満はデータ不足です。
           </p>
           <div
             className="level-filters"
@@ -643,7 +726,7 @@ function App() {
               <button
                 key={level}
                 aria-pressed={analysisLevel === level}
-                onClick={() => setAnalysisLevel(level)}
+                onClick={() => setAnalysisLevel(level as Level)}
               >
                 Lv{level}
               </button>
@@ -657,36 +740,35 @@ function App() {
           <h2>
             Lv{analysisLevel} · {RANGES[analysisRange].label}
           </h2>
-          {analysisLevel !== 1 && (
-            <section>
-              Lv{analysisLevel}のゲームと分析はベータ5で追加予定です。
-            </section>
-          )}
-          {analysisLevel === 1 && (
+          {
             <>
               <p>全期間の記録は残し、リセット後の集計だけを初期化します。</p>
               <button
                 onClick={() => {
                   if (
                     confirm(
-                      `本当にLv1・${RANGES[analysisRange].label}のリセット後正答率をリセットしますか？ 他の音域・累計正答率・履歴・復習は残ります。`,
+                      `本当にLv${analysisLevel}・${RANGES[analysisRange].label}のリセット後正答率をリセットしますか？ 他の音域・累計正答率・履歴・復習は残ります。`,
                     )
                   )
                     void persist(
-                      resetAnalysis(dataRef.current, 1, analysisRange),
+                      resetAnalysis(
+                        dataRef.current,
+                        analysisLevel,
+                        analysisRange,
+                      ),
                     ).catch(() => {});
                 }}
               >
                 リセット後正答率をリセット
               </button>
               <p className="muted">
-                {analysisResetFor(data, 1, analysisRange)
-                  ? `最終リセット：${format(analysisResetFor(data, 1, analysisRange)!.at)}`
+                {analysisResetFor(data, analysisLevel, analysisRange)
+                  ? `最終リセット：${format(analysisResetFor(data, analysisLevel, analysisRange)!.at)}`
                   : "リセット前は累計と同じ集計です。"}
               </p>
             </>
-          )}
-          {analysisLevel === 1 && (
+          }
+          {
             <>
               <AccuracyChart
                 title="リセット後の累計正答率"
@@ -697,6 +779,7 @@ function App() {
                   analysisRange,
                 )}
                 names={noteNames}
+                level={analysisLevel}
               />
               <AccuracyChart
                 title="累計正答率"
@@ -707,9 +790,10 @@ function App() {
                   analysisRange,
                 )}
                 names={noteNames}
+                level={analysisLevel}
               />
             </>
-          )}
+          }
           <p className="muted">
             AIによる解説は未導入です。JSON/CSVを手動で共有して分析できます。
           </p>
@@ -808,7 +892,7 @@ function App() {
                 <button
                   key={level}
                   aria-pressed={graphLevel === level}
-                  onClick={() => setGraphLevel(level)}
+                  onClick={() => setGraphLevel(level as Level)}
                 >
                   Lv{level}
                 </button>
@@ -824,7 +908,7 @@ function App() {
             </p>
             <Graph data={data} level={graphLevel} range={graphRange} />
             <p className="muted">
-              Lv2・Lv3はベータ5で追加。データがない日は0点にしません。
+              各レベル・音域を個別に集計します。データがない日は0点にしません。
             </p>
           </section>
         </>
@@ -1008,8 +1092,10 @@ function App() {
         <>
           <div className="row">
             <span>
-              {session.mode === "review" ? "復習" : "Lv1 · 単音"} ·{" "}
-              {RANGES[questions[index].range].label}
+              {session.mode === "review"
+                ? `復習 · Lv${questions[index].level ?? 1}`
+                : `Lv${questions[index].level ?? 1}`}{" "}
+              · {RANGES[questions[index].range].label}
             </span>
             <span>
               {index + 1} / {questions.length}問
@@ -1019,23 +1105,32 @@ function App() {
             max={questions.length}
             value={index + (phase === "feedback" ? 1 : 0)}
           />
-          <section className="game">
+          <section className={`game game-${phase}`}>
             <span className="eyebrow">
               QUESTION {String(index + 1).padStart(2, "0")}
             </span>
             <div className="sound-icon" aria-hidden="true">
               {phase === "feedback"
-                ? answer === questions[index].note
+                ? lastAttempt && fullyCorrect(lastAttempt)
                   ? "○"
-                  : answer === null
-                    ? "—"
-                    : "×"
+                  : lastAttempt && attemptPoints(lastAttempt) === 2
+                    ? "△"
+                    : lastAttempt && unanswered(lastAttempt)
+                      ? "—"
+                      : "×"
                 : "♫"}
             </div>
             <h2 role="status">{labels[phase]}</h2>
             {phase === "ready" && (
               <>
-                <p>再生後、8秒以内に音名を選んでください。</p>
+                <p>
+                  再生後、8秒以内に
+                  {questions[index].level === 2
+                    ? "2音を順番に選び、判定ボタンを押してください。"
+                    : questions[index].level === 3
+                      ? "ルートとコードの種類を選び、判定ボタンを押してください。"
+                      : "音名を選んでください。"}
+                </p>
                 <button className="primary" onClick={() => void play()}>
                   音を聴く →
                 </button>
@@ -1057,16 +1152,29 @@ function App() {
             {(phase === "feedback" || phase === "correction") && (
               <>
                 <p>
-                  {answer === questions[index].note
+                  {lastAttempt && fullyCorrect(lastAttempt)
                     ? "正解！ +5点"
-                    : answer === null
-                      ? "未回答 · 0点（復習には追加しません）"
-                      : `不正解 · 回答 ${noteNames[answer]}`}
+                    : lastAttempt && attemptPoints(lastAttempt) === 2
+                      ? "一部正解 · +2点"
+                      : lastAttempt && unanswered(lastAttempt)
+                        ? "未回答 · 0点（復習には追加しません）"
+                        : `不正解 · 0点`}
+                  {lastAttempt && !unanswered(lastAttempt) && (
+                    <small>
+                      回答：
+                      {lastAttempt.answer === null
+                        ? "—"
+                        : noteNames[lastAttempt.answer]}
+                      {lastAttempt.level === 2
+                        ? ` → ${lastAttempt.secondAnswer === null ? "—" : noteNames[lastAttempt.secondAnswer!]}`
+                        : (lastAttempt.answerChord ?? "")}
+                    </small>
+                  )}
                 </p>
                 <p>
-                  正解は <strong>{noteNames[questions[index].note]}</strong>
+                  正解は <strong>{describeQuestion(questions[index])}</strong>
                 </p>
-                {answer !== null && answer !== questions[index].note && (
+                {lastAttempt && hasWrongAnswer(lastAttempt) && (
                   <button
                     disabled={phase === "correction" || saving}
                     onClick={() => void replayCorrect()}
@@ -1085,17 +1193,81 @@ function App() {
               </>
             )}
           </section>
+          {(questions[index].level ?? 1) === 2 && (
+            <div
+              className="level-filters"
+              role="group"
+              aria-label="回答する音の順番"
+            >
+              {[0, 1].map((slot) => (
+                <button
+                  key={slot}
+                  disabled={phase !== "answer"}
+                  aria-pressed={answerSlot === slot}
+                  onClick={() => setAnswerSlot(slot)}
+                >
+                  {slot + 1}音目：
+                  {formNotes[slot] === null
+                    ? "未選択"
+                    : noteNames[formNotes[slot]!]}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="notes">
             {noteNames.map((n, i) => (
               <button
                 disabled={phase !== "answer"}
                 key={n}
-                onClick={() => void submit(i)}
+                onClick={() => chooseNote(i)}
               >
                 {n}
               </button>
             ))}
           </div>
+          {questions[index].level === 3 && (
+            <>
+              <p>
+                ルート：
+                {formNotes[0] === null ? "未選択" : noteNames[formNotes[0]!]}
+              </p>
+              <div
+                className="level-filters"
+                role="group"
+                aria-label="コードの種類"
+              >
+                {CHORD_KINDS.map((chord) => (
+                  <button
+                    key={chord}
+                    disabled={phase !== "answer"}
+                    aria-pressed={formChord === chord}
+                    onClick={() => chooseChord(chord)}
+                  >
+                    {chord}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+          {phase === "answer" && (questions[index].level ?? 1) > 1 && (
+            <button
+              className="primary"
+              disabled={
+                questions[index].level === 2
+                  ? formNotes.every((n) => n === null)
+                  : formNotes[0] === null || formChord === null
+              }
+              onClick={() =>
+                void submit(
+                  form.current.notes[0],
+                  form.current.notes[1],
+                  form.current.chord,
+                )
+              }
+            >
+              この回答で判定する
+            </button>
+          )}
           {phase === "answer" && (
             <button onClick={() => void submit(null)}>
               わからない（未回答）
@@ -1123,18 +1295,22 @@ function App() {
               <small> / {session.total * 5}</small>
             </div>
             <h2>
-              {session.attempts.filter((a) => a.answer === a.note).length} /{" "}
-              {session.total}問正解
+              {
+                session.attempts.filter((a) =>
+                  fullyCorrect(a, a.level ?? session.level),
+                ).length
+              }{" "}
+              / {session.total}問正解
             </h2>
             <p>
               不正解{" "}
               {
                 session.attempts.filter(
-                  (a) => a.answer !== null && a.answer !== a.note,
+                  (a) => !unanswered(a) && attemptPoints(a) === 0,
                 ).length
               }
-              問 · 未回答{" "}
-              {session.attempts.filter((a) => a.answer === null).length}問
+              問 · 未回答 {session.attempts.filter((a) => unanswered(a)).length}
+              問
             </p>
             <p>
               {error
@@ -1142,6 +1318,10 @@ function App() {
                 : "このブラウザに結果を保存しました。"}
             </p>
           </section>
+          <p>
+            一部正解（2点）：
+            {session.attempts.filter((a) => attemptPoints(a) === 2).length}問
+          </p>
           {tile("復習する", `${pending.length}音が復習待ち`, "list")}
           {tile("カレンダーで振り返る", "日別の結果を見る", "calendar")}
           <button className="primary" onClick={() => nav("home")}>
@@ -1150,7 +1330,7 @@ function App() {
         </>
       )}
       <footer>
-        <span>MusicSensor / Beta 4</span>
+        <span>MusicSensor / Beta 5</span>
         <span>{saving ? "保存中…" : "LOCAL FIRST"}</span>
       </footer>
     </main>
@@ -1160,26 +1340,20 @@ function AccuracyChart({
   title,
   attempts,
   names,
+  level,
 }: {
   title: string;
   attempts: import("./model").Attempt[];
   names: readonly string[];
+  level: Level;
 }) {
-  const stats = names.map((note, n) => {
-    const answers = attempts.filter((a) => a.note === n);
-    const correct = answers.filter((a) => a.answer === n).length;
-    return {
-      note,
-      total: answers.length,
-      rate: answers.length ? (correct / answers.length) * 100 : null,
-    };
-  });
+  const stats = analysisBuckets(attempts, level, names);
   return (
     <section className="accuracy-chart">
       <h3>{title}</h3>
       <p className="muted">
         横軸：音名 /
-        縦軸：正答率（%）。横にスクロールして全12音を確認できます。—
+        縦軸：正答率（%）。横にスクロールして全候補を確認できます。—
         は回答なし、0%は回答あり・正解なし。5回答未満はデータ不足です。
       </p>
       <div
@@ -1189,7 +1363,8 @@ function AccuracyChart({
         aria-label={`${title}の横スクロール領域`}
       >
         <svg
-          viewBox="0 0 720 270"
+          style={{ minWidth: stats.length * 55 + 70 }}
+          viewBox={`0 0 ${stats.length * 55 + 70} 270`}
           role="img"
           aria-label={`${title}の音名別正答率グラフ`}
         >
@@ -1197,7 +1372,7 @@ function AccuracyChart({
             <g key={rate}>
               <line
                 x1="40"
-                x2="710"
+                x2={stats.length * 55 + 60}
                 y1={220 - rate * 1.8}
                 y2={220 - rate * 1.8}
                 stroke="#d8ded8"
@@ -1208,7 +1383,7 @@ function AccuracyChart({
             </g>
           ))}
           {stats.map((stat, i) => (
-            <g key={stat.note}>
+            <g key={stat.label}>
               <rect
                 x={52 + i * 55}
                 y={220 - (stat.rate ?? 0) * 1.8}
@@ -1217,7 +1392,7 @@ function AccuracyChart({
                 fill="#426756"
               >
                 <title>
-                  {stat.note}：
+                  {stat.label}：
                   {stat.rate === null ? "—" : Math.round(stat.rate) + "%"}（
                   {stat.total}回答）
                 </title>
@@ -1230,7 +1405,7 @@ function AccuracyChart({
                 {stat.rate === null ? "—" : Math.round(stat.rate) + "%"}
               </text>
               <text x={68 + i * 55} y="242" textAnchor="middle">
-                {stat.note}
+                {stat.label}
               </text>
               <text x={68 + i * 55} y="262" textAnchor="middle">
                 {stat.total}回答

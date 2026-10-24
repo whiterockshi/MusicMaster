@@ -1,4 +1,4 @@
-import { frequency, type RangeMode } from "./model";
+import { frequency, chordNotes, type RangeMode } from "./model";
 let context: AudioContext | undefined;
 export async function unlock() {
   context ??= new AudioContext();
@@ -69,4 +69,26 @@ export function speak(text: string): Promise<void> {
     }, 10000);
     api.speak(u);
   });
+}
+
+export function playQuestion(question: import("./model").Question): number {
+  const level = question.level ?? 1;
+  if (level === 1) {
+    playNote(question.note, question.range);
+    return 1100;
+  }
+  if (level === 2) {
+    tone(frequency(question.note, question.range), 1, 0.12);
+    tone(frequency(question.secondNote!, question.range), 1, 0.12, 1.35);
+    return 2450;
+  }
+  const pitches = chordNotes(question.note, question.chord!);
+  pitches.forEach((note, i) =>
+    tone(frequency(note, question.range), 0.5, 0.1, i * 0.62),
+  );
+  const together = 3.16;
+  pitches.forEach((note) =>
+    tone(frequency(note, question.range), 1.2, 0.03, together),
+  );
+  return 4460;
 }

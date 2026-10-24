@@ -38,7 +38,96 @@ export type AnalysisReset = { at: string; counts: Record<string, number> };
 export function frequency(note: number, range: RangeMode = "high") {
   return 440 * 2 ** (((RANGES[range].octave + 1) * 12 + note - 69) / 12);
 }
+export type Level = 1 | 2 | 3;
+export const CHORDS = {
+  M7: [0, 4, 7, 11],
+  m7: [0, 3, 7, 10],
+  "7": [0, 4, 7, 10],
+  m7b5: [0, 3, 6, 10],
+} as const;
+export type ChordKind = keyof typeof CHORDS;
+export const CHORD_KINDS: ChordKind[] = ["M7", "m7", "7", "m7b5"];
+export type Question = {
+  note: number;
+  range: RangeMode;
+  level?: Level;
+  secondNote?: number;
+  chord?: ChordKind;
+};
+export function questionKey(q: {
+  note: number;
+  range?: RangeMode;
+  level?: Level;
+  secondNote?: number;
+  chord?: ChordKind;
+}) {
+  return `${q.level ?? 1}:${q.range ?? "high"}:${q.note}:${q.secondNote ?? ""}:${q.chord ?? ""}`;
+}
+export function questionLabel(
+  q: { note: number; level?: Level; secondNote?: number; chord?: ChordKind },
+  names: readonly string[] = NOTES,
+) {
+  return (q.level ?? 1) === 2
+    ? `${names[q.note]} → ${names[q.secondNote!]}`
+    : `${names[q.note]}${q.chord ?? ""}`;
+}
+export function chordNotes(note: number, chord: ChordKind) {
+  return CHORDS[chord].map((interval) => note + interval);
+}
+export function attemptPoints(a: Attempt, level: Level = a.level ?? 1) {
+  if (level === 2) {
+    const n =
+      Number(a.answer === a.note) + Number(a.secondAnswer === a.secondNote);
+    return n === 2 ? 5 : n === 1 ? 2 : 0;
+  }
+  return a.answer === a.note && (level !== 3 || a.answerChord === a.chord)
+    ? 5
+    : 0;
+}
+export function fullyCorrect(a: Attempt, level: Level = a.level ?? 1) {
+  return attemptPoints(a, level) === 5;
+}
+export function unanswered(a: Attempt, level: Level = a.level ?? 1) {
+  return level === 2
+    ? a.answer === null && (a.secondAnswer ?? null) === null
+    : a.answer === null;
+}
+export function hasWrongAnswer(a: Attempt, level: Level = a.level ?? 1) {
+  if (level === 2)
+    return (
+      (a.answer !== null && a.answer !== a.note) ||
+      ((a.secondAnswer ?? null) !== null && a.secondAnswer !== a.secondNote)
+    );
+  return !unanswered(a, level) && !fullyCorrect(a, level);
+}
+export function generateQuestions(
+  level: Level,
+  range: RangeMode,
+  random = Math.random,
+): Question[] {
+  if (level === 1)
+    return levelOneQuestions(random).map((note) => ({ note, range, level }));
+  if (level === 2) {
+    const first = levelOneQuestions(random),
+      second = levelOneQuestions(random);
+    return first.map((note, i) => ({
+      note,
+      range,
+      level,
+      secondNote: second[i],
+    }));
+  }
+  const candidates = NOTES.flatMap((_, note) =>
+    CHORD_KINDS.map((chord) => ({ note, range, level, chord })),
+  );
+  return shuffle(candidates, random).slice(0, 20);
+}
 export type Attempt = {
+  level?: Level;
+  secondNote?: number;
+  secondAnswer?: number | null;
+  chord?: ChordKind;
+  answerChord?: ChordKind | null;
   range?: RangeMode;
   id: string;
   sessionId: string;
@@ -56,11 +145,14 @@ export type Session = {
   status: "active" | "complete" | "interrupted";
   mode: "normal" | "review";
   total: number;
-  level: 1;
+  level: Level;
   range?: RangeMode;
   attempts: Attempt[];
 };
 export type Review = {
+  level?: Level;
+  secondNote?: number;
+  chord?: ChordKind;
   range?: RangeMode;
   note: number;
   first: string;
@@ -84,7 +176,7 @@ export const empty = (): Data => ({
   debug: [],
 });
 export const score = (s: Session) =>
-  s.attempts.filter((a) => a.answer === a.note).length * 5;
+  s.attempts.reduce((sum, a) => sum + attemptPoints(a, a.level ?? s.level), 0);
 export function record(data: Data, a: Attempt): Data {
   const d = structuredClone(data);
   const session = d.sessions.find((s) => s.id === a.sessionId);
@@ -95,13 +187,17 @@ export function record(data: Data, a: Attempt): Data {
     session.attempts.some((x) => x.id === a.id)
   )
     return d;
-  session.attempts.push(a);
-  const range = a.range ?? session.range ?? "high";
+  const normalized = {
+    ...a,
+    level: a.level ?? session.level,
+    range: a.range ?? session.range ?? ("high" as RangeMode),
+  };
+  session.attempts.push(normalized);
   const item = d.reviews.find(
-    (r) => r.note === a.note && (r.range ?? "high") === range,
+    (r) => questionKey(r) === questionKey(normalized),
   );
-  if (a.answer === null) d.debug = [...d.debug, a].slice(-2);
-  else if (a.answer !== a.note) {
+  if (unanswered(normalized)) d.debug = [...d.debug, normalized].slice(-2);
+  else if (hasWrongAnswer(normalized)) {
     if (item) {
       item.pending = true;
       item.last = a.at;
@@ -109,13 +205,17 @@ export function record(data: Data, a: Attempt): Data {
     } else
       d.reviews.push({
         note: a.note,
-        range,
+        level: normalized.level,
+        range: normalized.range,
+        secondNote: a.secondNote,
+        chord: a.chord,
         first: a.at,
         last: a.at,
         count: 1,
         pending: true,
       });
-  } else if (a.mode === "review" && item) item.pending = false;
+  } else if (a.mode === "review" && fullyCorrect(normalized) && item)
+    item.pending = false;
   return d;
 }
 export function shuffle<T>(items: T[], random = Math.random): T[] {
@@ -170,11 +270,15 @@ export function analysisAttempts(
         (range === undefined || (s.range ?? "high") === range),
     )
     .flatMap((s) =>
-      s.attempts.slice(
-        recent ? (analysisResetFor(data, level, range)?.counts[s.id] ?? 0) : 0,
-      ),
+      s.attempts
+        .slice(
+          recent
+            ? (analysisResetFor(data, level, range)?.counts[s.id] ?? 0)
+            : 0,
+        )
+        .map((a) => ({ ...a, level: a.level ?? s.level })),
     )
-    .filter((a) => a.answer !== null);
+    .filter((a) => !unanswered(a));
 }
 export function analysisResetFor(data: Data, level: number, range?: RangeMode) {
   return (
@@ -223,7 +327,7 @@ export function validate(value: unknown): Data {
     !Array.isArray(d.debug)
   )
     throw Error("対応していないJSON形式です");
-  if (d.sessions.length > 10000 || d.reviews.length > 36 || d.debug.length > 2)
+  if (d.sessions.length > 10000 || d.reviews.length > 612 || d.debug.length > 2)
     throw Error("データ件数が上限を超えています");
   const date = (s: unknown) =>
     typeof s === "string" && Number.isFinite(Date.parse(s));
@@ -284,6 +388,16 @@ export function validate(value: unknown): Data {
         throw Error("音域別リセット形式が不正です");
     }
   }
+  function validQuestion(
+    q: { note: number; level?: Level; secondNote?: number; chord?: ChordKind },
+    level: Level,
+  ) {
+    if (![1, 2, 3].includes(level)) return false;
+    if (level === 2) return note(q.secondNote) && q.chord === undefined;
+    if (level === 3)
+      return Object.hasOwn(CHORDS, q.chord ?? "") && q.secondNote === undefined;
+    return q.secondNote === undefined && q.chord === undefined;
+  }
   const ids = new Set<string>();
   for (const s of d.sessions) {
     if (
@@ -294,13 +408,13 @@ export function validate(value: unknown): Data {
       !date(s.started) ||
       typeof s.timezone !== "string" ||
       s.timezone.length > 100 ||
-      s.level !== 1 ||
+      ![1, 2, 3].includes(s.level) ||
       (s.range !== undefined && !Object.hasOwn(RANGES, s.range)) ||
       !["normal", "review"].includes(s.mode) ||
       !["active", "complete", "interrupted"].includes(s.status) ||
       !Number.isInteger(s.total) ||
       s.total < 1 ||
-      s.total > 36 ||
+      s.total > 612 ||
       !Array.isArray(s.attempts) ||
       s.attempts.length > s.total ||
       (s.mode === "normal" && s.total !== 20) ||
@@ -311,17 +425,26 @@ export function validate(value: unknown): Data {
     ids.add(s.id);
     const attempts = new Set<string>();
     for (const a of s.attempts) {
-      checkAttempt(a);
+      checkAttempt(a, s.level);
+      if (s.mode === "normal" && (a.level ?? s.level) !== s.level)
+        throw Error("回答レベルが不正です");
       if (a.sessionId !== s.id || a.mode !== s.mode || attempts.has(a.id))
         throw Error("回答の対応関係が不正です");
       attempts.add(a.id);
     }
   }
-  function checkAttempt(a: Attempt) {
+  function checkAttempt(a: Attempt, fallback: Level = 1) {
     if (
       !a ||
       typeof a.id !== "string" ||
       a.id.length > 160 ||
+      !validQuestion(a, a.level ?? fallback) ||
+      ((a.level ?? fallback) === 2 &&
+        a.secondAnswer !== null &&
+        !note(a.secondAnswer)) ||
+      ((a.level ?? fallback) === 3 &&
+        a.answer !== null &&
+        !Object.hasOwn(CHORDS, a.answerChord ?? "")) ||
       typeof a.sessionId !== "string" ||
       a.sessionId.length > 160 ||
       !note(a.note) ||
@@ -340,7 +463,8 @@ export function validate(value: unknown): Data {
       !r ||
       !note(r.note) ||
       (r.range !== undefined && !Object.hasOwn(RANGES, r.range)) ||
-      notes.has(`${r.range ?? "high"}:${r.note}`) ||
+      !validQuestion(r, r.level ?? 1) ||
+      notes.has(questionKey(r)) ||
       !date(r.first) ||
       !date(r.last) ||
       !Number.isInteger(r.count) ||
@@ -348,11 +472,11 @@ export function validate(value: unknown): Data {
       typeof r.pending !== "boolean"
     )
       throw Error("復習形式が不正です");
-    notes.add(`${r.range ?? "high"}:${r.note}`);
+    notes.add(questionKey(r));
   }
   for (const a of d.debug) {
     checkAttempt(a);
-    if (a.answer !== null) throw Error("未回答例が不正です");
+    if (!unanswered(a)) throw Error("未回答例が不正です");
   }
   return structuredClone(d);
 }
@@ -366,16 +490,15 @@ export function migrateReviews(data: Data): Data {
     .flatMap((s) =>
       s.attempts.map((a) => ({
         ...a,
+        level: a.level ?? s.level,
         range: a.range ?? s.range ?? ("high" as RangeMode),
       })),
     )
     .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   for (const a of history) {
-    if (a.answer === null) continue;
-    const item = d.reviews.find(
-      (r) => r.note === a.note && r.range === a.range,
-    );
-    if (a.answer !== a.note) {
+    if (unanswered(a)) continue;
+    const item = d.reviews.find((r) => questionKey(r) === questionKey(a));
+    if (hasWrongAnswer(a)) {
       if (item) {
         item.count++;
         item.last = a.at;
@@ -383,16 +506,20 @@ export function migrateReviews(data: Data): Data {
       } else
         d.reviews.push({
           note: a.note,
+          level: a.level ?? 1,
+          secondNote: a.secondNote,
+          chord: a.chord,
           range: a.range,
           first: a.at,
           last: a.at,
           count: 1,
           pending: true,
         });
-    } else if (a.mode === "review" && item) item.pending = false;
+    } else if (a.mode === "review" && fullyCorrect(a) && item)
+      item.pending = false;
   }
   for (const old of data.reviews) {
-    if (!d.reviews.some((r) => r.note === old.note))
+    if (!d.reviews.some((r) => questionKey(r) === questionKey(old)))
       d.reviews.push({ ...old, range: old.range ?? "high" });
   }
   return d;
@@ -428,4 +555,51 @@ export function spokenNote(note: number, notation: "sharp" | "flat") {
     "シ",
   ];
   return (notation === "flat" ? flat : sharp)[note];
+}
+
+export function analysisBuckets(
+  attempts: Attempt[],
+  level: Level,
+  names: readonly string[],
+) {
+  const buckets =
+    level === 3
+      ? names.flatMap((name, note) =>
+          CHORD_KINDS.map((chord) => ({ label: name + chord, note, chord })),
+        )
+      : names.map((label, note) => ({ label, note, chord: undefined }));
+  return buckets.map((bucket) => {
+    const samples =
+      level === 2
+        ? attempts.flatMap((a) => [
+            { note: a.note, answer: a.answer },
+            { note: a.secondNote!, answer: a.secondAnswer ?? null },
+          ])
+        : attempts;
+    const answers = samples.filter(
+      (a) =>
+        a.note === bucket.note &&
+        a.answer !== null &&
+        (level !== 3 || (a as Attempt).chord === bucket.chord),
+    );
+    const correct = answers.filter(
+      (a) =>
+        a.answer === a.note &&
+        (level !== 3 || (a as Attempt).answerChord === bucket.chord),
+    ).length;
+    return {
+      ...bucket,
+      total: answers.length,
+      correct,
+      rate: answers.length ? (correct / answers.length) * 100 : null,
+    };
+  });
+}
+
+export function spokenQuestion(q: Question, notation: "sharp" | "flat") {
+  const root = spokenNote(q.note, notation);
+  if (q.level === 2) return `${root}、${spokenNote(q.secondNote!, notation)}`;
+  if (q.level === 3)
+    return `${root}、${{ M7: "メジャーセブン", m7: "マイナーセブン", "7": "セブン", m7b5: "マイナーセブンフラットファイブ" }[q.chord!]}`;
+  return root;
 }

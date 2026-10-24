@@ -39,7 +39,9 @@ test("20 questions, persistence, mixed review, calendar, debug FIFO and mobile l
     ),
   ).toBe(true);
   await page.getByRole("button", { name: "トレーニングをはじめる" }).click();
-  await expect(page.getByRole("button", { name: "準備中" })).toHaveCount(2);
+  await expect(
+    page.getByRole("button", { name: /Lv[123]を開始する/ }),
+  ).toHaveCount(3);
   await page.getByRole("button", { name: "Lv1を開始する" }).click();
   // Exercise Web Audio in real browser once, then advance time for the whole session.
   await page.clock.install();
@@ -282,13 +284,16 @@ test("analysis is separated by level and empty levels never show Lv1 statistics"
   await expect(page.locator(".accuracy-chart svg")).toHaveCount(2);
   await page.getByRole("button", { name: "Lv2", exact: true }).click();
   await expect(
-    page.getByText("Lv2のゲームと分析はベータ5で追加予定です。"),
+    page.getByRole("heading", { name: "Lv2 · Highギター" }),
   ).toBeVisible();
-  await expect(page.locator(".accuracy-chart svg")).toHaveCount(0);
+  await expect(page.locator(".accuracy-chart svg")).toHaveCount(2);
   await page.getByRole("button", { name: "Lv3", exact: true }).click();
   await expect(
-    page.getByText("Lv3のゲームと分析はベータ5で追加予定です。"),
+    page.getByRole("heading", { name: "Lv3 · Highギター" }),
   ).toBeVisible();
+  await expect(
+    page.locator(".accuracy-chart").first().locator("rect"),
+  ).toHaveCount(48);
   await page.getByRole("button", { name: "Lv1", exact: true }).click();
   await expect(page.locator(".accuracy-chart svg")).toHaveCount(2);
   await page.screenshot({
