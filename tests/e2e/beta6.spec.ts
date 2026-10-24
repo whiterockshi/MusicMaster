@@ -1,4 +1,65 @@
 import { test, expect, type Page } from "@playwright/test";
+
+test("LAN HTTP explains unavailable voice input and still saves button sessions without randomUUID", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.addInitScript(() => {
+    Math.random = () => 0.999999;
+  });
+  // Real insecure origin, not a stubbed isSecureContext/randomUUID implementation.
+  await page.route("http://musicsensor.test/**", async (route) => {
+    const url = new URL(route.request().url());
+    const response = await route.fetch({
+      url: `http://127.0.0.1:4173${url.pathname}${url.search}`,
+    });
+    await route.fulfill({ response });
+  });
+  await page.goto("http://musicsensor.test/");
+  expect(await page.evaluate(() => window.isSecureContext)).toBe(false);
+  expect(await page.evaluate(() => typeof crypto.randomUUID)).toBe("undefined");
+  await page.getByRole("button", { name: "サポート", exact: false }).click();
+  await page.getByRole("button", { name: "設定", exact: false }).click();
+  await expect(page.getByLabel("音声回答（日本語）")).toBeDisabled();
+  await expect(page.getByLabel("ボタン回答", { exact: true })).toBeChecked();
+  await expect(page.locator("#voice-availability")).toContainText("HTTPS");
+  await expect(page.locator("#voice-availability")).toContainText(
+    "ボタン回答は利用できます",
+  );
+  await page
+    .getByText("iPhone・PCで音声回答を使うには", { exact: true })
+    .click();
+  await expect(
+    page.getByText("接続：HTTP / 安全なコンテキスト：いいえ"),
+  ).toBeVisible();
+  await page.screenshot({
+    path: "test-results/beta6-http-settings.png",
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "◖ MusicSensor" }).click();
+  await page.getByRole("button", { name: "トレーニングをはじめる" }).click();
+  await start(page);
+  await page.getByRole("button", { name: "音を聴く" }).click();
+  await page.clock.runFor(4000);
+  await page.getByRole("button", { name: "C", exact: true }).click();
+  await expect(page.getByText("正解！ +5点", { exact: false })).toBeVisible();
+  const snapshot = await stored(page);
+  const sessions = (
+    snapshot.state as { sessions: { id: string; attempts: unknown[] }[] }
+  ).sessions;
+  expect(sessions[0].id).toMatch(
+    /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/,
+  );
+  expect(sessions[0].attempts).toHaveLength(1);
+  await page.reload();
+  expect(
+    ((await stored(page)).state as { sessions: { id: string }[] }).sessions[0]
+      .id,
+  ).toBe(sessions[0].id);
+  expect(errors).toEqual([]);
+});
+
 async function mockVoice(page: Page) {
   await page.addInitScript(() => {
     Math.random = () => 0.999999;

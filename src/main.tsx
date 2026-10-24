@@ -42,6 +42,7 @@ import {
   type Session,
 } from "./model";
 import { load, save, loadRecordings, type StorageOptions } from "./storage";
+import { createSessionId } from "./id";
 import {
   VoiceListener,
   voiceSupport,
@@ -376,7 +377,7 @@ function App() {
       }
       const now = new Date().toISOString();
       const s: Session = {
-        id: crypto.randomUUID(),
+        id: createSessionId(),
         started: now,
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         status: "active",
@@ -1318,6 +1319,11 @@ function App() {
         <>
           <section>
             <h2>回答方式</h2>
+            <p id="voice-availability">
+              {voiceSupport()
+                ? `${voiceSupport()} この接続では音声回答を選べません。下の「iPhone・PCで音声回答を使うには」を確認してください。ボタン回答は利用できます。`
+                : "音声回答を選択できます。利用説明に同意してから音声入力をテストしてください。"}
+            </p>
             <fieldset>
               <legend>入力方法</legend>
               <label className="range-option">
@@ -1335,7 +1341,8 @@ function App() {
                   type="radio"
                   name="input-mode"
                   checked={settings.inputMode === "voice"}
-                  disabled={saving}
+                  disabled={saving || !!voiceSupport()}
+                  aria-describedby="voice-availability"
                   onChange={() => changeInput("voice")}
                 />
                 音声回答（日本語）
@@ -1344,7 +1351,29 @@ function App() {
             <p>
               音声回答はマイクを使い、ブラウザ・OS提供元の認識サービスへ音声が送られる場合があります。提供元・通信要否はブラウザに依存します。アプリは外部APIキーや独自の音声サーバーを使いません。
             </p>
-            {voiceSupport() && <p className="alert">{voiceSupport()}</p>}
+            <details>
+              <summary>iPhone・PCで音声回答を使うには</summary>
+              <p>
+                PCは開発サーバーのLocalアドレスをChrome・Edge・Safariで開いてください。LAN内のHTTPアドレスでは音声回答を利用できません。
+              </p>
+              <p>
+                iPhoneは同じWi-Fiに接続し、信頼した証明書を使うHTTPSアドレスで開きます。iPhoneでlocalhostを入力してもPCには接続できません。
+              </p>
+              <p>
+                リポジトリの docs/IPHONE_HTTPS.md
+                に、WSLでの証明書作成・iPhoneへのインストール・接続方法を記載しています。準備後はPCで
+                npm run dev:https
+                を実行してください。証明書の警告が出る状態では音声入力の確認へ進まず、証明書の信頼設定を確認してください。
+              </p>
+              <p className="muted">
+                接続を変えると保存領域も変わります。履歴を移す場合はサポートでJSONバックアップを保存し、新しい接続先で復元してください。録音はJSONには含まれません。
+              </p>
+              <p>
+                接続：{window.location.protocol === "https:" ? "HTTPS" : "HTTP"}
+                {" / "}安全なコンテキスト：
+                {window.isSecureContext ? "はい" : "いいえ"}
+              </p>
+            </details>
             <label className="range-option">
               <input
                 type="checkbox"
