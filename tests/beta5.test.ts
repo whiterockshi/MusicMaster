@@ -53,14 +53,13 @@ describe("Beta 5 music and scoring", () => {
       ).size,
     ).toBe(48);
   });
-  it("generates twenty valid level2 pairs and twenty distinct chord questions", () => {
+  it("generates ten different-tone pairs and five distinct chord questions", () => {
     const pairs = generateQuestions(2, "low", () => 0);
-    expect(pairs).toHaveLength(20);
-    expect(new Set(pairs.map((q) => q.note)).size).toBe(12);
-    expect(new Set(pairs.map((q) => q.secondNote)).size).toBe(12);
+    expect(pairs).toHaveLength(10);
+    for (const q of pairs) expect(q.note).not.toBe(q.secondNote);
     const chords = generateQuestions(3, "high", () => 0.999);
-    expect(chords).toHaveLength(20);
-    expect(new Set(chords.map(questionKey)).size).toBe(20);
+    expect(chords).toHaveLength(5);
+    expect(new Set(chords.map(questionKey)).size).toBe(5);
     for (const q of chords) expect(CHORD_KINDS).toContain(q.chord);
   });
   it("scores all two-note combinations at 0/2/5 without ordering bias", () => {
@@ -155,5 +154,36 @@ describe("Beta 5 music and scoring", () => {
     expect(buckets).toHaveLength(48);
     expect(buckets.find((b) => b.label === "CM7")?.rate).toBe(0);
     expect(buckets.find((b) => b.label === "C7")?.rate).toBe(100);
+  });
+});
+
+describe("short sessions and pitch regression", () => {
+  it("keeps legacy 20-question sessions readable and accepts new lengths", () => {
+    for (const level of [2, 3] as const) {
+      for (const total of [level === 2 ? 10 : 5, 20])
+        expect(
+          validate({ ...empty(), sessions: [{ ...session(level), total }] })
+            .sessions[0].total,
+        ).toBe(total);
+    }
+  });
+  it("checks High guitar G4 against G sharp and normalizes chart scores", async () => {
+    const { frequency, daily } = await import("../src/model");
+    expect(frequency(7, "high")).toBeCloseTo(391.99543598, 6);
+    expect(frequency(8, "high")).toBeCloseTo(415.30469758, 6);
+    const s = {
+      ...session(3),
+      total: 5,
+      status: "complete" as const,
+      attempts: Array.from({ length: 5 }, (_, i) =>
+        attempt({
+          id: String(i),
+          level: 3,
+          chord: "M7" as const,
+          answerChord: "M7" as const,
+        }),
+      ),
+    };
+    expect(daily({ ...empty(), sessions: [s] }, 3, "bass")[0].points).toBe(100);
   });
 });

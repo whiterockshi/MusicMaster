@@ -7,6 +7,7 @@ export async function unlock() {
     throw Error("音声を開始できません。再開を押してください。");
 }
 export function stopAudio() {
+  speechGeneration++;
   const previous = context;
   context = undefined;
   if (previous && previous.state !== "closed") void previous.close();
@@ -41,31 +42,52 @@ export function feedback(correct: boolean) {
     tone(1047, 0.35, 0.07, 0.25);
   } else tone(150, 0.45, 0.06);
 }
-// Use only local voices; never request remote speech services in this beta.
-export function speak(text: string): Promise<void> {
+// Browser voices are populated asynchronously, especially after a cold start.
+let priming: Promise<SpeechSynthesisVoice | undefined> | undefined;
+let speechGeneration = 0;
+export function prepareSpeech(): Promise<SpeechSynthesisVoice | undefined> {
+  const api = window.speechSynthesis;
+  if (!api) return Promise.resolve(undefined);
+  const find = () =>
+    api
+      .getVoices()
+      .find((v) => v.localService && v.lang.toLowerCase().startsWith("ja"));
+  const ready = find();
+  if (ready) return Promise.resolve(ready);
+  return (priming ??= new Promise((resolve) => {
+    const done = (voice?: SpeechSynthesisVoice) => {
+      clearTimeout(timer);
+      api.removeEventListener("voiceschanged", changed);
+      resolve(voice);
+    };
+    const changed = () => {
+      const voice = find();
+      if (voice) done(voice);
+    };
+    const timer = setTimeout(() => done(), 2000);
+    api.addEventListener("voiceschanged", changed);
+    changed();
+  }));
+}
+// Restrict speech to local voices; never fall back to an external speech service.
+export async function speak(text: string): Promise<void> {
+  const generation = speechGeneration;
+  const voice = await prepareSpeech();
+  if (!voice || generation !== speechGeneration) return;
   return new Promise((resolve) => {
     const api = window.speechSynthesis;
-    const voice = api
-      ?.getVoices()
-      .find((v) => v.localService && v.lang.startsWith("ja"));
-    if (!api || !voice) {
-      resolve();
-      return;
-    }
     const u = new SpeechSynthesisUtterance(text);
     u.voice = voice;
     u.lang = "ja-JP";
-    u.onend = () => {
+    const done = () => {
       clearTimeout(timer);
       resolve();
     };
-    u.onerror = () => {
-      clearTimeout(timer);
-      resolve();
-    };
+    u.onend = done;
+    u.onerror = done;
     const timer = setTimeout(() => {
       api.cancel();
-      resolve();
+      done();
     }, 10000);
     api.speak(u);
   });

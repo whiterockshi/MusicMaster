@@ -122,6 +122,8 @@ test("20 questions, persistence, mixed review, calendar, debug FIFO and mobile l
   expect(frequencies).toContain(784);
   expect(frequencies).toContain(1047);
   expect(frequencies).toContain(150);
+  expect(frequencies.some((f) => Math.abs(f - 391.99543598) < 0.01)).toBe(true);
+  expect(frequencies.some((f) => Math.abs(f - 415.30469758) < 0.01)).toBe(true);
   await page.reload();
   await page
     .getByRole("button", { name: "復習", exact: false })

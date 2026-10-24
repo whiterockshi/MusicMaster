@@ -31,7 +31,7 @@ test("Lv2 full session: two ordered answers, partial points, wrong replay and pe
   await page.getByRole("button", { name: "トレーニングをはじめる" }).click();
   await page.getByRole("button", { name: "Lv2を開始する" }).click();
   await page.clock.install();
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 10; i++) {
     const before = (await tones(page)).length;
     await page.getByRole("button", { name: "音を聴く" }).click();
     await page.clock.runFor(5000);
@@ -42,6 +42,7 @@ test("Lv2 full session: two ordered answers, partial points, wrong replay and pe
     expect(played).toHaveLength(2);
     expect(played[1].at - played[0].at).toBeCloseTo(1.35, 1);
     const answers = played.map((t) => pitch(t.hz));
+    expect(answers[0]).not.toBe(answers[1]);
     await page
       .getByRole("button", {
         name: names[i === 1 ? (answers[0] + 1) % 12 : answers[0]],
@@ -62,7 +63,7 @@ test("Lv2 full session: two ordered answers, partial points, wrong replay and pe
       await expect(
         page.getByText("一部正解 · +2点", { exact: false }),
       ).toBeVisible();
-    if (i === 1) {
+    if (i <= 1) {
       await expect(
         page.getByRole("status").filter({ hasText: "正解を聴き直しましょう" }),
       ).toBeVisible();
@@ -74,12 +75,12 @@ test("Lv2 full session: two ordered answers, partial points, wrong replay and pe
         fullPage: true,
       });
     await page
-      .getByRole("button", { name: i === 19 ? "結果を見る" : "次の問題へ" })
+      .getByRole("button", { name: i === 9 ? "結果を見る" : "次の問題へ" })
       .click();
   }
-  await expect(page.locator(".big-score")).toContainText("92");
+  await expect(page.locator(".big-score")).toContainText("42");
   await expect(
-    page.getByRole("heading", { name: "18 / 20問正解" }),
+    page.getByRole("heading", { name: "8 / 10問正解" }),
   ).toBeVisible();
   await expect(
     page.getByText("一部正解（2点）：1問", { exact: false }),
@@ -103,7 +104,7 @@ test("Lv2 full session: two ordered answers, partial points, wrong replay and pe
     page.getByRole("img", { name: "Lv2・Highギターの日別平均得点グラフ" }),
   ).toBeVisible();
   await page.getByText("グラフの数値を見る").click();
-  await expect(page.getByText("92.0点", { exact: false })).toBeVisible();
+  await expect(page.getByText("84.0点", { exact: false })).toBeVisible();
 });
 
 test("Lv3 full session: arpeggio then simultaneous chord, 48-class answer and range statistics", async ({
@@ -120,7 +121,7 @@ test("Lv3 full session: arpeggio then simultaneous chord, 48-class answer and ra
     "0,4,7,10": "7",
     "0,3,6,10": "m7b5",
   };
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 5; i++) {
     const before = (await tones(page)).length;
     await page.getByRole("button", { name: "音を聴く" }).click();
     await page.clock.runFor(7000);
@@ -153,12 +154,12 @@ test("Lv3 full session: arpeggio then simultaneous chord, 48-class answer and ra
       .click();
     await expect(page.getByText("正解！ +5点", { exact: false })).toBeVisible();
     await page
-      .getByRole("button", { name: i === 19 ? "結果を見る" : "次の問題へ" })
+      .getByRole("button", { name: i === 4 ? "結果を見る" : "次の問題へ" })
       .click();
   }
-  await expect(page.locator(".big-score")).toContainText("100");
+  await expect(page.locator(".big-score")).toContainText("25");
   await expect(
-    page.getByRole("heading", { name: "20 / 20問正解" }),
+    page.getByRole("heading", { name: "5 / 5問正解" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "◖ MusicSensor" }).click();
   await page
@@ -187,7 +188,7 @@ test("Lv3 full session: arpeggio then simultaneous chord, 48-class answer and ra
   const { readFile } = await import("node:fs/promises");
   const backup = JSON.parse(await readFile(path!, "utf8"));
   expect(backup.sessions[0].level).toBe(3);
-  expect(backup.sessions[0].attempts).toHaveLength(20);
+  expect(backup.sessions[0].attempts).toHaveLength(5);
   expect(
     backup.sessions[0].attempts.every(
       (a: { chord: string; answerChord: string }) => a.chord === a.answerChord,
@@ -317,6 +318,7 @@ test("Lv2 explicit unanswered discards draft while timeout retains a valid parti
   await expect(
     page.getByText("未回答 · 0点（復習には追加しません）"),
   ).toBeVisible();
+  await page.clock.runFor(6000);
   await page.getByRole("button", { name: "次の問題へ" }).click();
   const before = (await tones(page)).length;
   await page.getByRole("button", { name: "音を聴く" }).click();
@@ -325,10 +327,14 @@ test("Lv2 explicit unanswered discards draft while timeout retains a valid parti
     (await tones(page)).slice(before).filter((t) => t.hz < 1000)[0].hz,
   );
   await page.getByRole("button", { name: names[note], exact: true }).click();
-  await page.clock.runFor(8500);
+  await page.clock.runFor(10500);
   await expect(
     page.getByText("一部正解 · +2点", { exact: false }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("status").filter({ hasText: "正解を聴き直しましょう" }),
+  ).toBeVisible();
+  await page.clock.runFor(6000);
   page.once("dialog", (d) => d.accept());
   await page.getByRole("button", { name: "中断してホームへ" }).click();
   await page

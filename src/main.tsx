@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import {
   NOTES,
+  SESSION_LENGTH,
+  ANSWER_SECONDS,
   CHORD_KINDS,
   type ChordKind,
   type Level,
@@ -36,7 +38,15 @@ import {
   type Session,
 } from "./model";
 import { load, save } from "./storage";
-import { unlock, cue, playQuestion, feedback, speak, stopAudio } from "./audio";
+import {
+  unlock,
+  cue,
+  playQuestion,
+  feedback,
+  speak,
+  stopAudio,
+  prepareSpeech,
+} from "./audio";
 import "./style.css";
 type Page =
   | "home"
@@ -144,6 +154,7 @@ function App() {
   const [phase, setPhase] = useState<Phase>("ready");
   const [remaining, setRemaining] = useState(8);
   const [volume, setVolume] = useState(true);
+  const [speechUnavailable, setSpeechUnavailable] = useState(false);
   const [date, setDate] = useState(dayKey(new Date().toISOString()));
   const [month, setMonth] = useState(date.slice(0, 7));
   const [analysisLevel, setAnalysisLevel] = useState<Level>(1);
@@ -237,7 +248,8 @@ function App() {
     const timer = setInterval(() => {
       const left = Math.max(
         0,
-        8 - Math.floor((Date.now() - started.current) / 1000),
+        ANSWER_SECONDS[questions[index].level ?? 1] -
+          Math.floor((Date.now() - started.current) / 1000),
       );
       setRemaining(left);
       if (left === 0) void submit(null, null, null, true);
@@ -248,7 +260,10 @@ function App() {
     if (busy.current) return;
     busy.current = true;
     try {
-      if (volume) await unlock();
+      if (volume) {
+        await unlock();
+        setSpeechUnavailable(!(await prepareSpeech()));
+      }
       const now = new Date().toISOString();
       const s: Session = {
         id: crypto.randomUUID(),
@@ -256,7 +271,7 @@ function App() {
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         status: "active",
         mode: review ? "review" : "normal",
-        total: review ? pending.length : 20,
+        total: review ? pending.length : SESSION_LENGTH[level],
         level,
         range: settings.range,
         attempts: [],
@@ -324,7 +339,7 @@ function App() {
       await wait(150);
       if (token !== generation.current) return;
       started.current = Date.now();
-      setRemaining(8);
+      setRemaining(ANSWER_SECONDS[questions[index].level ?? 1]);
       setPhase("answer");
     } catch {
       setError("音声を開始できません。端末の音量を確認して再開してください。");
@@ -416,7 +431,11 @@ function App() {
     } finally {
       busy.current = false;
     }
-    if (hasWrongAnswer(a) && phaseRef.current === "feedback")
+    if (
+      (hasWrongAnswer(a) ||
+        (a.level === 2 && (a.answer === null || a.secondAnswer === null))) &&
+      phaseRef.current === "feedback"
+    )
       await replayCorrect();
   }
   async function next() {
@@ -533,6 +552,11 @@ function App() {
         </button>
       )}
       <h1>{title[page]}</h1>
+      {speechUnavailable && (
+        <p className="muted" role="status">
+          端末内の日本語音声が見つからないため、案内は画面表示になります。OS・ブラウザに日本語の読み上げ音声を追加してください。
+        </p>
+      )}
       {error && (
         <p className="alert" role="alert">
           {error}
@@ -622,8 +646,8 @@ function App() {
               </h2>
               <p>
                 {n === 2
-                  ? "順番に鳴る2音を回答。部分点あり。"
-                  : "分散和音と同時和音を聞いて回答。"}
+                  ? "異なる2音を順番に回答。10問・50点満点・回答10秒。部分点あり。"
+                  : "分散和音と同時和音を聞いて回答。5問・25点満点。"}
               </p>
               <button className="primary" onClick={() => void start(false, n)}>
                 Lv{n}を開始する →
@@ -904,7 +928,8 @@ function App() {
               label="グラフの音域"
             />
             <p>
-              Lv{graphLevel} · {RANGES[graphRange].label} · 日別平均点
+              Lv{graphLevel} · {RANGES[graphRange].label} ·
+              日別平均点（100点換算）
             </p>
             <Graph data={data} level={graphLevel} range={graphRange} />
             <p className="muted">
@@ -1124,7 +1149,7 @@ function App() {
             {phase === "ready" && (
               <>
                 <p>
-                  再生後、8秒以内に
+                  再生後、{ANSWER_SECONDS[questions[index].level ?? 1]}秒以内に
                   {questions[index].level === 2
                     ? "2音を順番に選び、判定ボタンを押してください。"
                     : questions[index].level === 3
@@ -1174,7 +1199,7 @@ function App() {
                 <p>
                   正解は <strong>{describeQuestion(questions[index])}</strong>
                 </p>
-                {lastAttempt && hasWrongAnswer(lastAttempt) && (
+                {lastAttempt && !fullyCorrect(lastAttempt) && (
                   <button
                     disabled={phase === "correction" || saving}
                     onClick={() => void replayCorrect()}

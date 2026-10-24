@@ -39,6 +39,8 @@ export function frequency(note: number, range: RangeMode = "high") {
   return 440 * 2 ** (((RANGES[range].octave + 1) * 12 + note - 69) / 12);
 }
 export type Level = 1 | 2 | 3;
+export const SESSION_LENGTH: Record<Level, number> = { 1: 20, 2: 10, 3: 5 };
+export const ANSWER_SECONDS: Record<Level, number> = { 1: 8, 2: 10, 3: 8 };
 export const CHORDS = {
   M7: [0, 4, 7, 11],
   m7: [0, 3, 7, 10],
@@ -108,19 +110,17 @@ export function generateQuestions(
   if (level === 1)
     return levelOneQuestions(random).map((note) => ({ note, range, level }));
   if (level === 2) {
-    const first = levelOneQuestions(random),
-      second = levelOneQuestions(random);
-    return first.map((note, i) => ({
-      note,
-      range,
-      level,
-      secondNote: second[i],
-    }));
+    const candidates = NOTES.flatMap((_, note) =>
+      NOTES.flatMap((_, secondNote) =>
+        note === secondNote ? [] : [{ note, secondNote, level, range }],
+      ),
+    );
+    return shuffle(candidates, random).slice(0, 10);
   }
   const candidates = NOTES.flatMap((_, note) =>
     CHORD_KINDS.map((chord) => ({ note, range, level, chord })),
   );
-  return shuffle(candidates, random).slice(0, 20);
+  return shuffle(candidates, random).slice(0, 5);
 }
 export type Attempt = {
   level?: Level;
@@ -246,7 +246,7 @@ export function daily(data: Data, level?: number, range?: RangeMode) {
     )
       continue;
     const key = dayKey(s.started);
-    map.set(key, [...(map.get(key) || []), score(s)]);
+    map.set(key, [...(map.get(key) || []), (score(s) / (s.total * 5)) * 100]);
   }
   return [...map]
     .sort(([a], [b]) => a.localeCompare(b))
@@ -417,7 +417,10 @@ export function validate(value: unknown): Data {
       s.total > 612 ||
       !Array.isArray(s.attempts) ||
       s.attempts.length > s.total ||
-      (s.mode === "normal" && s.total !== 20) ||
+      (s.mode === "normal" &&
+        !(s.level === 1 ? [20] : s.level === 2 ? [10, 20] : [5, 20]).includes(
+          s.total,
+        )) ||
       (s.status === "complete" && s.attempts.length !== s.total) ||
       (s.ended !== undefined && !date(s.ended))
     )
