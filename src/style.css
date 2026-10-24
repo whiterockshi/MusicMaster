@@ -538,3 +538,33 @@ fieldset {
     margin-top: 8px;
   }
 }
+.voice-status {
+  padding: 8px 12px;
+  background: #e8eddd;
+  border-radius: 8px;
+  margin: 8px 0;
+}
+.voice-status p {
+  margin: 0;
+  font-size: 13px;
+}
+.voice-status small {
+  overflow-wrap: anywhere;
+}
+audio {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  margin: 12px 0;
+}
+select {
+  font: inherit;
+  padding: 8px;
+  border-radius: 6px;
+  border: 1px solid #cbd4c8;
+  background: #fffefa;
+  color: inherit;
+}
+fieldset {
+  min-width: 0;
+}
