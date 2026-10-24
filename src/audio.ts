@@ -104,7 +104,10 @@ export async function speak(text: string): Promise<void> {
 
 export function playQuestion(question: import("./model").Question): number {
   const level = question.level ?? 1;
-  const pitches = questionPitches(question).map(midiFrequency);
+  // Lv3 is performed one octave above its intentionally unchanged notation.
+  const pitches = questionPitches(question).map((midi) =>
+    midiFrequency(midi + (level === 3 ? 12 : 0)),
+  );
   if (level === 1) {
     tone(pitches[0], 1, 0.12);
     return 1100;

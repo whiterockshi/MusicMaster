@@ -135,7 +135,7 @@ test("Lv3 full session: arpeggio then simultaneous chord, 48-class answer and ra
     const played = (await tones(page)).slice(before).filter((t) => t.hz < 1000);
     expect(played).toHaveLength(8);
     if (i === 0) {
-      const expected = [65.40639133, 164.81377846, 195.99771799, 246.94165063];
+      const expected = [130.81278265, 329.62755691, 391.99543598, 493.88330126];
       played
         .slice(0, 4)
         .forEach((t, n) => expect(t.hz).toBeCloseTo(expected[n], 3));

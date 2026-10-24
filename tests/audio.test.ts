@@ -64,3 +64,67 @@ describe("cold-start Japanese voice readiness", () => {
     expect(mock.api.speak).not.toHaveBeenCalled();
   });
 });
+
+it("raises every Lv3 tone one octave while preserving notation and Lv1/2 output", async () => {
+  const played: number[] = [];
+  class Context {
+    state = "running";
+    currentTime = 0;
+    destination = {};
+    resume = async () => {};
+    createOscillator() {
+      const oscillator = {
+        type: "sine",
+        frequency: { value: 0 },
+        connect: () => {},
+        start: () => played.push(oscillator.frequency.value),
+        stop: () => {},
+      };
+      return oscillator;
+    }
+    createGain() {
+      return {
+        gain: {
+          setValueAtTime: () => {},
+          linearRampToValueAtTime: () => {},
+          exponentialRampToValueAtTime: () => {},
+        },
+        connect: () => {},
+      };
+    }
+  }
+  vi.stubGlobal("AudioContext", Context);
+  const audio = await import("../src/audio");
+  const { questionPitches, midiLabel, midiFrequency } =
+    await import("../src/model");
+  await audio.unlock();
+  const q = {
+    level: 3 as const,
+    note: 11,
+    chord: "m7b5" as const,
+    range: "bass" as const,
+    layout: 2 as const,
+  };
+  expect(questionPitches(q).map((n) => midiLabel(n))).toEqual([
+    "B1",
+    "D3",
+    "F3",
+    "A3",
+  ]);
+  audio.playQuestion(q);
+  const expected = [123.47082531, 293.66476792, 349.22823143, 440];
+  expect(played).toHaveLength(8);
+  played.forEach((hz, i) => expect(hz).toBeCloseTo(expected[i % 4], 5));
+  played.length = 0;
+  audio.playQuestion({ ...q, level: 1, chord: undefined });
+  expect(played[0]).toBeCloseTo(midiFrequency(35), 5);
+  played.length = 0;
+  audio.playQuestion({
+    level: 2,
+    note: 11,
+    secondNote: 0,
+    range: "bass",
+    layout: 2,
+  });
+  expect(played).toEqual([midiFrequency(35), midiFrequency(36)]);
+});
