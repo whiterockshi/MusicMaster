@@ -458,3 +458,19 @@ fieldset {
   width: 100%;
   text-align: right;
 }
+
+.level-filters button {
+  white-space: nowrap;
+  padding: 12px 8px;
+  font-size: 13px;
+}
+@media (max-width: 480px) {
+  .review-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .review-item strong {
+    font-size: 23px;
+  }
+}

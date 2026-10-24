@@ -6,6 +6,9 @@ import {
   RANGES,
   DEFAULT_SETTINGS,
   analysisAttempts,
+  analysisResetFor,
+  migrateReviews,
+  type RangeMode,
   resetAnalysis,
   type Settings,
   empty,
@@ -74,7 +77,9 @@ function App() {
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
   const [sessionId, setSessionId] = useState("");
-  const [questions, setQuestions] = useState<number[]>([]);
+  const [questions, setQuestions] = useState<
+    { note: number; range: RangeMode }[]
+  >([]);
   const [index, setIndex] = useState(0);
   const [phase, setPhase] = useState<Phase>("ready");
   const [remaining, setRemaining] = useState(8);
@@ -83,6 +88,9 @@ function App() {
   const [date, setDate] = useState(dayKey(new Date().toISOString()));
   const [month, setMonth] = useState(date.slice(0, 7));
   const [analysisLevel, setAnalysisLevel] = useState(1);
+  const [analysisRange, setAnalysisRange] = useState<RangeMode>("high");
+  const [graphLevel, setGraphLevel] = useState(1);
+  const [graphRange, setGraphRange] = useState<RangeMode>("high");
   const dataRef = useRef(data);
   const generation = useRef(0);
   const busy = useRef(false);
@@ -199,7 +207,14 @@ function App() {
       });
       setSessionId(s.id);
       setQuestions(
-        review ? shuffle(pending.map((r) => r.note)) : levelOneQuestions(),
+        review
+          ? shuffle(
+              pending.map((r) => ({ note: r.note, range: r.range ?? "high" })),
+            )
+          : levelOneQuestions().map((note) => ({
+              note,
+              range: settings.range,
+            })),
       );
       setIndex(0);
       setPhase("ready");
@@ -232,7 +247,7 @@ function App() {
       await wait(2000);
       if (token !== generation.current) return;
       setPhase("playing");
-      if (volume) playNote(questions[index], session?.range ?? "high");
+      if (volume) playNote(questions[index].note, questions[index].range);
       await wait(1100);
       if (token !== generation.current) return;
       if (volume) cue();
@@ -254,11 +269,12 @@ function App() {
     setPhase("feedback");
     phaseRef.current = "feedback";
     setAnswer(value);
-    if (volume) feedback(value === questions[index]);
+    if (volume) feedback(value === questions[index].note);
     const a = {
       id: `${sessionId}:${index}`,
       sessionId,
-      note: questions[index],
+      note: questions[index].note,
+      range: questions[index].range,
       answer: value,
       at: new Date().toISOString(),
       elapsed: Date.now() - started.current,
@@ -509,8 +525,15 @@ function App() {
             <section>復習待ちはありません。Lv1で練習しましょう。</section>
           )}
           {pending.map((r) => (
-            <section className="row" key={r.note}>
-              <strong>{noteNames[r.note]}</strong>
+            <section
+              className="row review-item"
+              key={`${r.range ?? "high"}:${r.note}`}
+            >
+              <strong>
+                {noteNames[r.note]}
+                {RANGES[r.range ?? "high"].octave}（
+                {RANGES[r.range ?? "high"].label}）
+              </strong>
               <span>
                 誤答 {r.count}回<small>最後の誤答 {format(r.last)}</small>
               </span>
@@ -527,9 +550,11 @@ function App() {
         <>
           {data.reviews.length === 0 && <p>まだ誤答履歴はありません。</p>}
           {data.reviews.map((r) => (
-            <section key={r.note}>
+            <section key={`${r.range ?? "high"}:${r.note}`}>
               <h2>
-                {noteNames[r.note]}{" "}
+                {noteNames[r.note]}
+                {RANGES[r.range ?? "high"].octave}（
+                {RANGES[r.range ?? "high"].label}）{" "}
                 <span className="badge">
                   {r.pending ? "復習待ち" : "解消済み"}
                 </span>
@@ -538,10 +563,16 @@ function App() {
                 累計 {r.count}回 / 初回 {format(r.first)}
               </p>
               {data.sessions
-                .flatMap((s) => s.attempts)
+                .flatMap((s) =>
+                  s.attempts.map((a) => ({
+                    ...a,
+                    range: a.range ?? s.range ?? "high",
+                  })),
+                )
                 .filter(
                   (a) =>
                     a.note === r.note &&
+                    a.range === (r.range ?? "high") &&
                     a.answer !== null &&
                     a.answer !== a.note,
                 )
@@ -575,7 +606,14 @@ function App() {
               </button>
             ))}
           </div>
-          <h2>Lv{analysisLevel}</h2>
+          <RangeFilter
+            value={analysisRange}
+            onChange={setAnalysisRange}
+            label="分析する音域"
+          />
+          <h2>
+            Lv{analysisLevel} · {RANGES[analysisRange].label}
+          </h2>
           {analysisLevel !== 1 && (
             <section>
               Lv{analysisLevel}のゲームと分析はベータ5で追加予定です。
@@ -588,31 +626,37 @@ function App() {
                 onClick={() => {
                   if (
                     confirm(
-                      "本当にLv1のリセット後正答率をリセットしますか？ 累計正答率・履歴・復習は残ります。",
+                      `本当にLv1・${RANGES[analysisRange].label}のリセット後正答率をリセットしますか？ 他の音域・累計正答率・履歴・復習は残ります。`,
                     )
                   )
-                    void persist(resetAnalysis(dataRef.current, 1)).catch(
-                      () => {},
-                    );
+                    void persist(
+                      resetAnalysis(dataRef.current, 1, analysisRange),
+                    ).catch(() => {});
                 }}
               >
                 リセット後正答率をリセット
               </button>
               <p className="muted">
-                {data.analysisResets?.[1]
-                  ? `最終リセット：${format(data.analysisResets[1].at)}`
+                {analysisResetFor(data, 1, analysisRange)
+                  ? `最終リセット：${format(analysisResetFor(data, 1, analysisRange)!.at)}`
                   : "リセット前は累計と同じ集計です。"}
               </p>
             </>
           )}
           {analysisLevel === 1 &&
             noteNames.map((note, n) => {
-              const a = analysisAttempts(data, analysisLevel).filter(
-                (a) => a.note === n,
-              );
-              const recent = analysisAttempts(data, analysisLevel, true).filter(
-                (a) => a.note === n,
-              );
+              const a = analysisAttempts(
+                data,
+                analysisLevel,
+                false,
+                analysisRange,
+              ).filter((a) => a.note === n);
+              const recent = analysisAttempts(
+                data,
+                analysisLevel,
+                true,
+                analysisRange,
+              ).filter((a) => a.note === n);
               const recentCorrect = recent.filter((a) => a.answer === n).length;
               const correct = a.filter((a) => a.answer === n).length;
               const wrong = a.filter((a) => a.answer !== n);
@@ -642,13 +686,6 @@ function App() {
                       {recent.length}回答{" "}
                       {recent.length < 5 ? "· データ不足" : ""}
                     </small>
-                  </div>
-                  <div className="bar">
-                    <i
-                      style={{
-                        width: `${a.length ? (correct / a.length) * 100 : 0}%`,
-                      }}
-                    />
                   </div>
                   {wrong.length > 0 && (
                     <small>
@@ -732,7 +769,7 @@ function App() {
                 <span>
                   {format(s.started)}
                   <small>
-                    {s.mode === "review" ? "復習" : "Lv1"} ·{" "}
+                    Lv{s.level} · {RANGES[s.range ?? "high"].label} ·{" "}
                     {s.status === "complete" ? "完了" : "中断"} ·{" "}
                     {s.attempts.length}/{s.total}問
                   </small>
@@ -745,8 +782,30 @@ function App() {
             ))}
           <h2>上達のグラフ</h2>
           <section>
-            <p>Lv1 · 日別平均点（完了した通常セッション）</p>
-            <Graph data={data} />
+            <div
+              className="level-filters"
+              role="group"
+              aria-label="グラフのレベル"
+            >
+              {[1, 2, 3].map((level) => (
+                <button
+                  key={level}
+                  aria-pressed={graphLevel === level}
+                  onClick={() => setGraphLevel(level)}
+                >
+                  Lv{level}
+                </button>
+              ))}
+            </div>
+            <RangeFilter
+              value={graphRange}
+              onChange={setGraphRange}
+              label="グラフの音域"
+            />
+            <p>
+              Lv{graphLevel} · {RANGES[graphRange].label} · 日別平均点
+            </p>
+            <Graph data={data} level={graphLevel} range={graphRange} />
             <p className="muted">
               Lv2・Lv3はベータ5で追加。データがない日は0点にしません。
             </p>
@@ -795,7 +854,7 @@ function App() {
               ))}
             </fieldset>
             <p className="muted">
-              次に開始する通常練習と復習に適用します。音色は共通のサイン波です。
+              次に開始する通常練習に適用します。復習は誤答時の音域で鳴らします。音色は共通のサイン波です。
             </p>
           </section>
         </>
@@ -891,7 +950,9 @@ function App() {
                   try {
                     if (file.size > 10 * 1024 * 1024)
                       throw Error("JSONは10MiB以下にしてください");
-                    const d = validate(JSON.parse(await file.text()));
+                    const d = migrateReviews(
+                      validate(JSON.parse(await file.text())),
+                    );
                     if (
                       !confirm(
                         "現在の全データをこのJSONで置き換えます。よろしいですか？",
@@ -916,7 +977,10 @@ function App() {
       {page === "game" && session && (
         <>
           <div className="row">
-            <span>{session.mode === "review" ? "復習" : "Lv1 · 単音"}</span>
+            <span>
+              {session.mode === "review" ? "復習" : "Lv1 · 単音"} ·{" "}
+              {RANGES[questions[index].range].label}
+            </span>
             <span>
               {index + 1} / {questions.length}問
             </span>
@@ -931,7 +995,7 @@ function App() {
             </span>
             <div className="sound-icon" aria-hidden="true">
               {phase === "feedback"
-                ? answer === questions[index]
+                ? answer === questions[index].note
                   ? "○"
                   : answer === null
                     ? "—"
@@ -963,14 +1027,14 @@ function App() {
             {phase === "feedback" && (
               <>
                 <p>
-                  {answer === questions[index]
+                  {answer === questions[index].note
                     ? "正解！ +5点"
                     : answer === null
                       ? "未回答 · 0点（復習には追加しません）"
                       : `不正解 · 回答 ${noteNames[answer]}`}
                 </p>
                 <p>
-                  正解は <strong>{noteNames[questions[index]]}</strong>
+                  正解は <strong>{noteNames[questions[index].note]}</strong>
                 </p>
                 <button
                   className="primary"
@@ -1054,10 +1118,41 @@ function App() {
     </main>
   );
 }
-function Graph({ data }: { data: Data }) {
-  const points = daily(data);
+function RangeFilter({
+  value,
+  onChange,
+  label,
+}: {
+  value: RangeMode;
+  onChange: (range: RangeMode) => void;
+  label: string;
+}) {
+  return (
+    <div className="level-filters" role="group" aria-label={label}>
+      {Object.entries(RANGES).map(([key, r]) => (
+        <button
+          key={key}
+          aria-pressed={value === key}
+          onClick={() => onChange(key as RangeMode)}
+        >
+          {r.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+function Graph({
+  data,
+  level,
+  range,
+}: {
+  data: Data;
+  level: number;
+  range: RangeMode;
+}) {
+  const points = daily(data, level, range);
   if (!points.length)
-    return <p>完了したLv1セッションがあるとグラフが表示されます。</p>;
+    return <p>選択したレベル・音域の完了した通常セッションはありません。</p>;
   const min = Date.parse(points[0].day + "T12:00:00");
   const max = Date.parse(points.at(-1)!.day + "T12:00:00");
   const x = (day: string) =>
@@ -1069,7 +1164,7 @@ function Graph({ data }: { data: Data }) {
       <svg
         viewBox="0 0 380 220"
         role="img"
-        aria-label="Lv1の日別平均得点グラフ"
+        aria-label={`Lv${level}・${RANGES[range].label}の日別平均得点グラフ`}
       >
         {[0, 25, 50, 75, 100].map((n) => (
           <g key={n}>

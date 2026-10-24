@@ -27,7 +27,7 @@ export const FLAT_NOTES = [
   "B",
 ];
 export const RANGES = {
-  high: { label: "Hiギター", octave: 4 },
+  high: { label: "Highギター", octave: 4 },
   low: { label: "Lowギター", octave: 3 },
   bass: { label: "ベース", octave: 2 },
 } as const;
@@ -39,6 +39,7 @@ export function frequency(note: number, range: RangeMode = "high") {
   return 440 * 2 ** (((RANGES[range].octave + 1) * 12 + note - 69) / 12);
 }
 export type Attempt = {
+  range?: RangeMode;
   id: string;
   sessionId: string;
   note: number;
@@ -60,6 +61,7 @@ export type Session = {
   attempts: Attempt[];
 };
 export type Review = {
+  range?: RangeMode;
   note: number;
   first: string;
   last: string;
@@ -69,6 +71,7 @@ export type Review = {
 export type Data = {
   schemaVersion: 1;
   settings?: Settings;
+  analysisRangeResets?: Record<string, AnalysisReset>;
   analysisResets?: Partial<Record<1 | 2 | 3, AnalysisReset>>;
   sessions: Session[];
   reviews: Review[];
@@ -93,7 +96,10 @@ export function record(data: Data, a: Attempt): Data {
   )
     return d;
   session.attempts.push(a);
-  const item = d.reviews.find((r) => r.note === a.note);
+  const range = a.range ?? session.range ?? "high";
+  const item = d.reviews.find(
+    (r) => r.note === a.note && (r.range ?? "high") === range,
+  );
   if (a.answer === null) d.debug = [...d.debug, a].slice(-2);
   else if (a.answer !== a.note) {
     if (item) {
@@ -103,6 +109,7 @@ export function record(data: Data, a: Attempt): Data {
     } else
       d.reviews.push({
         note: a.note,
+        range,
         first: a.at,
         last: a.at,
         count: 1,
@@ -128,10 +135,16 @@ export function dayKey(iso: string) {
   const d = new Date(iso);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
-export function daily(data: Data) {
+export function daily(data: Data, level?: number, range?: RangeMode) {
   const map = new Map<string, number[]>();
   for (const s of data.sessions) {
-    if (s.status !== "complete" || s.mode !== "normal") continue;
+    if (
+      s.status !== "complete" ||
+      s.mode !== "normal" ||
+      (level !== undefined && s.level !== level) ||
+      (range !== undefined && (s.range ?? "high") !== range)
+    )
+      continue;
     const key = dayKey(s.started);
     map.set(key, [...(map.get(key) || []), score(s)]);
   }
@@ -147,24 +160,51 @@ export function analysisAttempts(
   data: Data,
   level: number,
   recent = false,
+  range?: RangeMode,
 ): Attempt[] {
   return data.sessions
-    .filter((s) => s.mode === "normal" && s.level === level)
+    .filter(
+      (s) =>
+        s.mode === "normal" &&
+        s.level === level &&
+        (range === undefined || (s.range ?? "high") === range),
+    )
     .flatMap((s) =>
       s.attempts.slice(
-        recent
-          ? (data.analysisResets?.[level as 1 | 2 | 3]?.counts[s.id] ?? 0)
-          : 0,
+        recent ? (analysisResetFor(data, level, range)?.counts[s.id] ?? 0) : 0,
       ),
     )
     .filter((a) => a.answer !== null);
 }
-export function resetAnalysis(data: Data, level: 1 | 2 | 3): Data {
+export function analysisResetFor(data: Data, level: number, range?: RangeMode) {
+  return (
+    (range ? data.analysisRangeResets?.[`${level}:${range}`] : undefined) ??
+    data.analysisResets?.[level as 1 | 2 | 3]
+  );
+}
+export function resetAnalysis(
+  data: Data,
+  level: 1 | 2 | 3,
+  range?: RangeMode,
+): Data {
   const counts = Object.fromEntries(
     data.sessions
-      .filter((s) => s.mode === "normal" && s.level === level)
+      .filter(
+        (s) =>
+          s.mode === "normal" &&
+          s.level === level &&
+          (range === undefined || (s.range ?? "high") === range),
+      )
       .map((s) => [s.id, s.attempts.length]),
   );
+  if (range)
+    return {
+      ...data,
+      analysisRangeResets: {
+        ...data.analysisRangeResets,
+        [`${level}:${range}`]: { at: new Date().toISOString(), counts },
+      },
+    };
   return {
     ...data,
     analysisResets: {
@@ -183,7 +223,7 @@ export function validate(value: unknown): Data {
     !Array.isArray(d.debug)
   )
     throw Error("対応していないJSON形式です");
-  if (d.sessions.length > 10000 || d.reviews.length > 12 || d.debug.length > 2)
+  if (d.sessions.length > 10000 || d.reviews.length > 36 || d.debug.length > 2)
     throw Error("データ件数が上限を超えています");
   const date = (s: unknown) =>
     typeof s === "string" && Number.isFinite(Date.parse(s));
@@ -221,6 +261,29 @@ export function validate(value: unknown): Data {
         throw Error("分析リセット形式が不正です");
     }
   }
+  if (d.analysisRangeResets !== undefined) {
+    if (
+      !d.analysisRangeResets ||
+      typeof d.analysisRangeResets !== "object" ||
+      Array.isArray(d.analysisRangeResets)
+    )
+      throw Error("音域別リセット形式が不正です");
+    for (const [key, reset] of Object.entries(d.analysisRangeResets)) {
+      if (
+        !/^[123]:(high|low|bass)$/.test(key) ||
+        !reset ||
+        !date(reset.at) ||
+        !reset.counts ||
+        typeof reset.counts !== "object" ||
+        Array.isArray(reset.counts) ||
+        Object.entries(reset.counts).some(
+          ([id, n]) =>
+            id.length > 160 || !Number.isInteger(n) || n < 0 || n > 20,
+        )
+      )
+        throw Error("音域別リセット形式が不正です");
+    }
+  }
   const ids = new Set<string>();
   for (const s of d.sessions) {
     if (
@@ -237,7 +300,7 @@ export function validate(value: unknown): Data {
       !["active", "complete", "interrupted"].includes(s.status) ||
       !Number.isInteger(s.total) ||
       s.total < 1 ||
-      s.total > 20 ||
+      s.total > 36 ||
       !Array.isArray(s.attempts) ||
       s.attempts.length > s.total ||
       (s.mode === "normal" && s.total !== 20) ||
@@ -262,6 +325,7 @@ export function validate(value: unknown): Data {
       typeof a.sessionId !== "string" ||
       a.sessionId.length > 160 ||
       !note(a.note) ||
+      (a.range !== undefined && !Object.hasOwn(RANGES, a.range)) ||
       (a.answer !== null && !note(a.answer)) ||
       !date(a.at) ||
       !Number.isFinite(a.elapsed) ||
@@ -270,12 +334,13 @@ export function validate(value: unknown): Data {
     )
       throw Error("回答形式が不正です");
   }
-  const notes = new Set<number>();
+  const notes = new Set<string>();
   for (const r of d.reviews) {
     if (
       !r ||
       !note(r.note) ||
-      notes.has(r.note) ||
+      (r.range !== undefined && !Object.hasOwn(RANGES, r.range)) ||
+      notes.has(`${r.range ?? "high"}:${r.note}`) ||
       !date(r.first) ||
       !date(r.last) ||
       !Number.isInteger(r.count) ||
@@ -283,11 +348,52 @@ export function validate(value: unknown): Data {
       typeof r.pending !== "boolean"
     )
       throw Error("復習形式が不正です");
-    notes.add(r.note);
+    notes.add(`${r.range ?? "high"}:${r.note}`);
   }
   for (const a of d.debug) {
     checkAttempt(a);
     if (a.answer !== null) throw Error("未回答例が不正です");
   }
   return structuredClone(d);
+}
+
+// Reconstruct old pitch-class-only review entries using the actual recorded session ranges.
+export function migrateReviews(data: Data): Data {
+  if (!data.reviews.some((r) => r.range === undefined)) return data;
+  const d = structuredClone(data);
+  d.reviews = [];
+  const history = d.sessions
+    .flatMap((s) =>
+      s.attempts.map((a) => ({
+        ...a,
+        range: a.range ?? s.range ?? ("high" as RangeMode),
+      })),
+    )
+    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  for (const a of history) {
+    if (a.answer === null) continue;
+    const item = d.reviews.find(
+      (r) => r.note === a.note && r.range === a.range,
+    );
+    if (a.answer !== a.note) {
+      if (item) {
+        item.count++;
+        item.last = a.at;
+        item.pending = true;
+      } else
+        d.reviews.push({
+          note: a.note,
+          range: a.range,
+          first: a.at,
+          last: a.at,
+          count: 1,
+          pending: true,
+        });
+    } else if (a.mode === "review" && item) item.pending = false;
+  }
+  for (const old of data.reviews) {
+    if (!d.reviews.some((r) => r.note === old.note))
+      d.reviews.push({ ...old, range: old.range ?? "high" });
+  }
+  return d;
 }

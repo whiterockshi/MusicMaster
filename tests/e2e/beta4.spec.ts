@@ -134,7 +134,7 @@ test("20 questions, persistence, mixed review, calendar, debug FIFO and mobile l
     .click();
   await page.getByRole("button", { name: "カレンダー" }).click();
   await expect(
-    page.getByRole("img", { name: "Lv1の日別平均得点グラフ" }),
+    page.getByRole("img", { name: "Lv1・Highギターの日別平均得点グラフ" }),
   ).toBeVisible();
   await expect(page.locator("section.row")).toHaveCount(1);
   await expect(page.locator("section.row")).toContainText("Lv1");
@@ -259,7 +259,7 @@ test("analysis is separated by level and empty levels never show Lv1 statistics"
     .click();
   await page.getByRole("button", { name: "苦手分析" }).click();
   await expect(
-    page.getByRole("heading", { name: "Lv1", exact: true }),
+    page.getByRole("heading", { name: "Lv1 · Highギター", exact: true }),
   ).toBeVisible();
   await expect(page.locator("section .row")).toHaveCount(12);
   await page.getByRole("button", { name: "Lv2", exact: true }).click();
@@ -384,4 +384,138 @@ test("analysis reset confirms, preserves all-time rates and survives reload", as
     path: "test-results/analysis-reset.png",
     fullPage: true,
   });
+});
+
+test("legacy review migration, original-range playback, analysis and all nine graph selections", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const frequencies: number[] = [];
+    Object.assign(window, { testFrequencies: frequencies });
+    const start = OscillatorNode.prototype.start;
+    OscillatorNode.prototype.start = function (
+      this: OscillatorNode,
+      when?: number,
+    ) {
+      frequencies.push(this.frequency.value);
+      return start.call(this, when);
+    };
+  });
+  const ranges = ["high", "low", "bass"];
+  const sessions = ranges.map((range, i) => ({
+    id: range,
+    started: `2026-10-24T0${i}:00:00Z`,
+    timezone: "Asia/Tokyo",
+    status: "complete",
+    total: 20,
+    level: 1,
+    mode: "normal",
+    range,
+    attempts: Array.from({ length: 20 }, (_, n) => ({
+      id: range + n,
+      sessionId: range,
+      note: 9,
+      answer: n < i ? 9 : 0,
+      at: `2026-10-24T0${i}:01:00Z`,
+      elapsed: 300,
+      mode: "normal",
+    })),
+  }));
+  await page.goto("/");
+  await page.getByRole("button", { name: "サポート", exact: false }).click();
+  page.once("dialog", (d) => d.accept());
+  await page
+    .getByLabel("JSONから復元（現在のデータを置換）")
+    .setInputFiles({
+      name: "legacy.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(
+        JSON.stringify({
+          schemaVersion: 1,
+          sessions,
+          debug: [],
+          reviews: [
+            {
+              note: 9,
+              first: "2026-10-24T00:01:00Z",
+              last: "2026-10-24T02:01:00Z",
+              count: 57,
+              pending: true,
+            },
+          ],
+        }),
+      ),
+    });
+  await expect(page.getByRole("status")).toContainText("データを復元しました");
+  await page.getByRole("button", { name: "◖ MusicSensor" }).click();
+  await page
+    .getByRole("button", { name: "復習", exact: false })
+    .first()
+    .click();
+  await page.getByRole("button", { name: "間違った問題の一覧" }).click();
+  for (const label of ["A4（Highギター）", "A3（Lowギター）", "A2（ベース）"])
+    await expect(page.getByText(label, { exact: true })).toBeVisible();
+  await page.screenshot({
+    path: "test-results/review-ranges.png",
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "全3問をまとめて復習" }).click();
+  await page.clock.install();
+  for (let i = 0; i < 3; i++) {
+    await page.getByRole("button", { name: "音を聴く" }).click();
+    await page.clock.runFor(4000);
+    await page.getByRole("button", { name: "A", exact: true }).click();
+    await page
+      .getByRole("button", { name: i === 2 ? "結果を見る" : "次の問題へ" })
+      .click();
+  }
+  const frequencies = await page.evaluate(
+    () => (window as unknown as { testFrequencies: number[] }).testFrequencies,
+  );
+  for (const hz of [110, 220, 440]) expect(frequencies).toContain(hz);
+  await page.getByRole("button", { name: "◖ MusicSensor" }).click();
+  await page
+    .getByRole("button", { name: "復習", exact: false })
+    .first()
+    .click();
+  await page.getByRole("button", { name: "苦手分析" }).click();
+  await expect(page.locator(".bar")).toHaveCount(0);
+  await page
+    .getByRole("group", { name: "分析する音域" })
+    .getByRole("button", { name: "ベース", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Lv1 · ベース" }),
+  ).toBeVisible();
+  await expect(
+    page.locator("section .row").filter({ hasText: "A" }).first(),
+  ).toContainText("10%");
+  await page.screenshot({
+    path: "test-results/analysis-range.png",
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "戻る" }).click();
+  await page.getByRole("button", { name: "カレンダー" }).click();
+  for (const level of [1, 2, 3]) {
+    await page
+      .getByRole("group", { name: "グラフのレベル" })
+      .getByRole("button", { name: `Lv${level}`, exact: true })
+      .click();
+    for (const label of ["Highギター", "Lowギター", "ベース"]) {
+      await page
+        .getByRole("group", { name: "グラフの音域" })
+        .getByRole("button", { name: label, exact: true })
+        .click();
+      if (level === 1)
+        await expect(
+          page.getByRole("img", { name: `Lv1・${label}の日別平均得点グラフ` }),
+        ).toBeVisible();
+      else
+        await expect(
+          page.getByText(
+            "選択したレベル・音域の完了した通常セッションはありません。",
+          ),
+        ).toBeVisible();
+    }
+  }
 });
