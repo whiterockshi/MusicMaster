@@ -600,3 +600,37 @@ test("upgrades an existing Beta5 IndexedDB without losing sessions or enabling v
   expect(snapshot.audioKeys).toEqual([]);
   expect(await events(page)).toEqual([]);
 });
+
+test("blocked database upgrade explains recovery and resumes without deleting history", async ({
+  page,
+}) => {
+  await page.clock.install();
+  await page.route("**/src/main.tsx", async (route) => {
+    await page.evaluate(async () => {
+      await new Promise<void>((resolve) => {
+        const request = indexedDB.open("musicsensor", 1);
+        request.onupgradeneeded = () =>
+          request.result.createObjectStore("state");
+        request.onsuccess = () => {
+          (window as unknown as { oldConnection: IDBDatabase }).oldConnection =
+            request.result;
+          resolve();
+        };
+      });
+    });
+    await route.continue();
+  });
+  await page.goto("/");
+  await expect(page.getByRole("status")).toContainText(
+    "記録を読み込んでいます",
+  );
+  await page.clock.runFor(11000);
+  await expect(page.getByRole("status")).toContainText("他のタブ");
+  await expect(page.getByRole("status")).toContainText("履歴の削除は不要");
+  await page.evaluate(() =>
+    (window as unknown as { oldConnection: IDBDatabase }).oldConnection.close(),
+  );
+  await expect(
+    page.getByRole("heading", { name: "聴くことから、はじめよう。" }),
+  ).toBeVisible();
+});

@@ -256,6 +256,11 @@ function App() {
     }
   }
   useEffect(() => {
+    const loadingTimer = setTimeout(() => {
+      setError(
+        "保存領域の読み込みを待っています。このアプリを開いている他のタブ・ウィンドウ（旧ベータ版を含む）をすべて閉じ、このページを再読み込みしてください。履歴の削除は不要です。解決しない場合はブラウザの保存設定を確認してください。",
+      );
+    }, 10000);
     load()
       .then(async (d) => {
         for (const s of d.sessions)
@@ -266,6 +271,8 @@ function App() {
         await save(d);
         dataRef.current = d;
         setData(d);
+        clearTimeout(loadingTimer);
+        setError("");
         setLoaded(true);
       })
       .catch(() =>
@@ -274,6 +281,7 @@ function App() {
         ),
       );
     return () => {
+      clearTimeout(loadingTimer);
       generation.current++;
       stopVoice();
       testListener.current.stop();

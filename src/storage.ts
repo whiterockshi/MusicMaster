@@ -7,6 +7,9 @@ export type StorageOptions = {
 let database: ReturnType<typeof openDB> | undefined;
 const db = () =>
   (database ??= openDB("musicsensor", 2, {
+    blocking() {
+      void database?.then((connection) => connection.close());
+    },
     upgrade(db) {
       if (!db.objectStoreNames.contains("state")) db.createObjectStore("state");
       if (!db.objectStoreNames.contains("debugAudio"))
