@@ -12,6 +12,32 @@ export const NOTES = [
   "A#",
   "B",
 ] as const;
+export const FLAT_NOTES = [
+  "C",
+  "Db",
+  "D",
+  "Eb",
+  "E",
+  "F",
+  "Gb",
+  "G",
+  "Ab",
+  "A",
+  "Bb",
+  "B",
+];
+export const RANGES = {
+  high: { label: "Hiギター", octave: 4 },
+  low: { label: "Lowギター", octave: 3 },
+  bass: { label: "ベース", octave: 2 },
+} as const;
+export type RangeMode = keyof typeof RANGES;
+export type Settings = { notation: "sharp" | "flat"; range: RangeMode };
+export const DEFAULT_SETTINGS: Settings = { notation: "sharp", range: "high" };
+export type AnalysisReset = { at: string; counts: Record<string, number> };
+export function frequency(note: number, range: RangeMode = "high") {
+  return 440 * 2 ** (((RANGES[range].octave + 1) * 12 + note - 69) / 12);
+}
 export type Attempt = {
   id: string;
   sessionId: string;
@@ -30,6 +56,7 @@ export type Session = {
   mode: "normal" | "review";
   total: number;
   level: 1;
+  range?: RangeMode;
   attempts: Attempt[];
 };
 export type Review = {
@@ -41,6 +68,8 @@ export type Review = {
 };
 export type Data = {
   schemaVersion: 1;
+  settings?: Settings;
+  analysisResets?: Partial<Record<1 | 2 | 3, AnalysisReset>>;
   sessions: Session[];
   reviews: Review[];
   debug: Attempt[];
@@ -114,6 +143,36 @@ export function daily(data: Data) {
       count: points.length,
     }));
 }
+export function analysisAttempts(
+  data: Data,
+  level: number,
+  recent = false,
+): Attempt[] {
+  return data.sessions
+    .filter((s) => s.mode === "normal" && s.level === level)
+    .flatMap((s) =>
+      s.attempts.slice(
+        recent
+          ? (data.analysisResets?.[level as 1 | 2 | 3]?.counts[s.id] ?? 0)
+          : 0,
+      ),
+    )
+    .filter((a) => a.answer !== null);
+}
+export function resetAnalysis(data: Data, level: 1 | 2 | 3): Data {
+  const counts = Object.fromEntries(
+    data.sessions
+      .filter((s) => s.mode === "normal" && s.level === level)
+      .map((s) => [s.id, s.attempts.length]),
+  );
+  return {
+    ...data,
+    analysisResets: {
+      ...data.analysisResets,
+      [level]: { at: new Date().toISOString(), counts },
+    },
+  };
+}
 export function validate(value: unknown): Data {
   const d = value as Data;
   if (
@@ -130,6 +189,38 @@ export function validate(value: unknown): Data {
     typeof s === "string" && Number.isFinite(Date.parse(s));
   const note = (n: unknown) =>
     Number.isInteger(n) && Number(n) >= 0 && Number(n) < 12;
+  if (
+    d.settings !== undefined &&
+    (!d.settings ||
+      typeof d.settings !== "object" ||
+      Array.isArray(d.settings) ||
+      !["sharp", "flat"].includes(d.settings.notation) ||
+      !Object.hasOwn(RANGES, d.settings.range))
+  )
+    throw Error("設定形式が不正です");
+  if (d.analysisResets !== undefined) {
+    if (
+      !d.analysisResets ||
+      typeof d.analysisResets !== "object" ||
+      Array.isArray(d.analysisResets)
+    )
+      throw Error("分析リセット形式が不正です");
+    for (const [level, reset] of Object.entries(d.analysisResets)) {
+      if (
+        !["1", "2", "3"].includes(level) ||
+        !reset ||
+        !date(reset.at) ||
+        !reset.counts ||
+        typeof reset.counts !== "object" ||
+        Array.isArray(reset.counts) ||
+        Object.entries(reset.counts).some(
+          ([id, n]) =>
+            id.length > 160 || !Number.isInteger(n) || n < 0 || n > 20,
+        )
+      )
+        throw Error("分析リセット形式が不正です");
+    }
+  }
   const ids = new Set<string>();
   for (const s of d.sessions) {
     if (
@@ -141,6 +232,7 @@ export function validate(value: unknown): Data {
       typeof s.timezone !== "string" ||
       s.timezone.length > 100 ||
       s.level !== 1 ||
+      (s.range !== undefined && !Object.hasOwn(RANGES, s.range)) ||
       !["normal", "review"].includes(s.mode) ||
       !["active", "complete", "interrupted"].includes(s.status) ||
       !Number.isInteger(s.total) ||

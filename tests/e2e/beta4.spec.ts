@@ -278,3 +278,110 @@ test("analysis is separated by level and empty levels never show Lv1 statistics"
     fullPage: true,
   });
 });
+
+test("flat notation and bass settings persist and change actual audio output", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const frequencies: number[] = [];
+    Object.assign(window, { testFrequencies: frequencies });
+    const original = OscillatorNode.prototype.start;
+    OscillatorNode.prototype.start = function (
+      this: OscillatorNode,
+      when?: number,
+    ) {
+      frequencies.push(this.frequency.value);
+      return original.call(this, when);
+    };
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "サポート", exact: false }).click();
+  await page.getByRole("button", { name: "設定", exact: false }).click();
+  await page.getByRole("switch", { name: "フラット表示" }).check();
+  await page.getByLabel("ベース（C2〜B2）").check();
+  await page.reload();
+  await page.getByRole("button", { name: "サポート", exact: false }).click();
+  await page.getByRole("button", { name: "設定", exact: false }).click();
+  await expect(
+    page.getByRole("switch", { name: "フラット表示" }),
+  ).toBeChecked();
+  await expect(page.getByLabel("ベース（C2〜B2）")).toBeChecked();
+  await page.screenshot({
+    path: "test-results/settings-mobile.png",
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "◖ MusicSensor" }).click();
+  await page.getByRole("button", { name: "トレーニングをはじめる" }).click();
+  await expect(
+    page.getByText("ベース（C2〜B2）の全12音", { exact: false }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Lv1を開始する" }).click();
+  await page.clock.install();
+  await page.getByRole("button", { name: "音を聴く" }).click();
+  await page.clock.runFor(4000);
+  await expect(
+    page.getByRole("button", { name: "Db", exact: true }),
+  ).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "C#", exact: true }),
+  ).toHaveCount(0);
+  const pitches = await page.evaluate(() =>
+    (window as unknown as { testFrequencies: number[] }).testFrequencies.filter(
+      (f) => f >= 65 && f < 124,
+    ),
+  );
+  expect(pitches).toHaveLength(1);
+});
+
+test("analysis reset confirms, preserves all-time rates and survives reload", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "トレーニングをはじめる" }).click();
+  await page.getByRole("button", { name: "Lv1を開始する" }).click();
+  await page.clock.install();
+  await page.getByRole("button", { name: "音を聴く" }).click();
+  await page.clock.runFor(4000);
+  await page.getByRole("button", { name: "C", exact: true }).click();
+  await page.reload();
+  await page
+    .getByRole("button", { name: "復習", exact: false })
+    .first()
+    .click();
+  await page.getByRole("button", { name: "苦手分析" }).click();
+  const totals = await page.locator("section .row").allTextContents();
+  const recent = await page.locator(".recent-rate").allTextContents();
+  page.once("dialog", (d) => d.dismiss());
+  await page
+    .getByRole("button", { name: "リセット後正答率をリセット", exact: true })
+    .click();
+  expect(await page.locator(".recent-rate").allTextContents()).toEqual(recent);
+  page.once("dialog", (d) => {
+    expect(d.message()).toContain("本当に");
+    return d.accept();
+  });
+  await page
+    .getByRole("button", { name: "リセット後正答率をリセット", exact: true })
+    .click();
+  await expect(
+    page.getByText("最終リセット：", { exact: false }),
+  ).toBeVisible();
+  expect(await page.locator("section .row").allTextContents()).toEqual(totals);
+  await expect(
+    page.locator(".recent-rate strong").filter({ hasText: "—" }),
+  ).toHaveCount(12);
+  await page.reload();
+  await page
+    .getByRole("button", { name: "復習", exact: false })
+    .first()
+    .click();
+  await page.getByRole("button", { name: "苦手分析" }).click();
+  await expect(
+    page.locator(".recent-rate strong").filter({ hasText: "—" }),
+  ).toHaveCount(12);
+  expect(await page.locator("section .row").allTextContents()).toEqual(totals);
+  await page.screenshot({
+    path: "test-results/analysis-reset.png",
+    fullPage: true,
+  });
+});

@@ -392,3 +392,69 @@ summary {
   color: white;
   border-color: #243e34;
 }
+.setting-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+.setting-switch input {
+  appearance: none;
+  flex-shrink: 0;
+  width: 48px;
+  height: 28px;
+  background: #a3ada3;
+  border-radius: 20px;
+  position: relative;
+  cursor: pointer;
+}
+.setting-switch input::after {
+  content: "";
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  left: 4px;
+  top: 4px;
+  background: white;
+  border-radius: 50%;
+}
+.setting-switch input:checked {
+  background: #426756;
+}
+.setting-switch input:checked::after {
+  left: 24px;
+}
+.range-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+}
+.range-option input {
+  accent-color: #426756;
+  width: 20px;
+  height: 20px;
+}
+fieldset {
+  border: 1px solid #dce1d5;
+  border-radius: 8px;
+  padding: 12px;
+}
+.recent-rate {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #e2e6da;
+  font-size: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+.recent-rate strong {
+  font-size: 21px;
+}
+.recent-rate small {
+  width: 100%;
+  text-align: right;
+}

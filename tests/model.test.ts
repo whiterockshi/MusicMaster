@@ -123,3 +123,51 @@ describe("Lv1 session coverage", () => {
     }
   });
 });
+
+describe("settings and analysis reset", () => {
+  it("supports old backups and preserves settings and reset markers in new backups", async () => {
+    const { resetAnalysis, DEFAULT_SETTINGS } = await import("../src/model");
+    expect(validate(setup()).settings).toBeUndefined();
+    for (const invalid of [null, false, [], 42]) {
+      expect(() => validate({ ...setup(), settings: invalid })).toThrow();
+      expect(() => validate({ ...setup(), analysisResets: invalid })).toThrow();
+    }
+    const d = resetAnalysis(
+      {
+        ...setup(),
+        settings: { ...DEFAULT_SETTINGS, range: "bass", notation: "flat" },
+      },
+      1,
+    );
+    expect(validate(JSON.parse(JSON.stringify(d)))).toEqual(d);
+    expect(() =>
+      validate({ ...d, settings: { range: "invalid", notation: "flat" } }),
+    ).toThrow();
+    expect(() =>
+      validate({ ...d, analysisResets: { 1: { at: "bad", counts: {} } } }),
+    ).toThrow();
+  });
+  it("resets only recent statistics and includes new answers in an existing session even at the same timestamp", async () => {
+    const { resetAnalysis, analysisAttempts } = await import("../src/model");
+    let d = record(setup(), a("one", 1, 1));
+    d = resetAnalysis(d, 1);
+    expect(analysisAttempts(d, 1)).toHaveLength(1);
+    expect(analysisAttempts(d, 1, true)).toHaveLength(0);
+    d = record(d, a("two", 1, 0));
+    expect(analysisAttempts(d, 1)).toHaveLength(2);
+    expect(analysisAttempts(d, 1, true).map((a) => a.id)).toEqual(["two"]);
+    const reset = resetAnalysis(d, 1);
+    expect(analysisAttempts(reset, 1, true)).toHaveLength(0);
+    expect(reset.sessions).toEqual(d.sessions);
+    expect(reset.reviews).toEqual(d.reviews);
+  });
+  it("synthesizes each range one octave apart without changing pitch class", async () => {
+    const { frequency } = await import("../src/model");
+    for (let note = 0; note < 12; note++) {
+      expect(frequency(note, "high")).toBeCloseTo(frequency(note, "low") * 2);
+      expect(frequency(note, "low")).toBeCloseTo(frequency(note, "bass") * 2);
+    }
+    expect(frequency(9, "high")).toBe(440);
+    expect(frequency(0, "bass")).toBeCloseTo(65.4064, 3);
+  });
+});
