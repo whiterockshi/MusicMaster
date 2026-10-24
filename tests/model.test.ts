@@ -6,6 +6,7 @@ import {
   daily,
   validate,
   shuffle,
+  levelOneQuestions,
   type Session,
   type Attempt,
 } from "../src/model";
@@ -102,5 +103,23 @@ describe("history aggregation and validation", () => {
     const input = [0, 1, 2, 3];
     expect(shuffle(input, () => 0).sort()).toEqual(input);
     expect(input).toEqual([0, 1, 2, 3]);
+  });
+});
+
+describe("Lv1 session coverage", () => {
+  it("always includes all twelve pitches in twenty questions with at most two of each", () => {
+    for (const random of [() => 0, () => 0.999999, Math.random]) {
+      for (let run = 0; run < 50; run++) {
+        const questions = levelOneQuestions(random);
+        expect(questions).toHaveLength(20);
+        expect(new Set(questions).size).toBe(12);
+        const counts = Array.from(
+          { length: 12 },
+          (_, n) => questions.filter((q) => q === n).length,
+        );
+        expect(counts.filter((n) => n === 2)).toHaveLength(8);
+        expect(counts.filter((n) => n === 1)).toHaveLength(4);
+      }
+    }
   });
 });

@@ -378,3 +378,17 @@ summary {
     letter-spacing: 1px;
   }
 }
+
+.level-filters {
+  display: flex;
+  gap: 10px;
+  margin: 20px 0;
+}
+.level-filters button {
+  flex: 1;
+}
+.level-filters button[aria-pressed="true"] {
+  background: #243e34;
+  color: white;
+  border-color: #243e34;
+}

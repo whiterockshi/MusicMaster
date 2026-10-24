@@ -90,6 +90,11 @@ export function shuffle<T>(items: T[], random = Math.random): T[] {
   }
   return a;
 }
+// All twelve pitches once, then eight distinct extras: each pitch occurs once or twice.
+export function levelOneQuestions(random = Math.random): number[] {
+  const pitches = NOTES.map((_, index) => index);
+  return shuffle([...pitches, ...shuffle(pitches, random).slice(0, 8)], random);
+}
 export function dayKey(iso: string) {
   const d = new Date(iso);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;

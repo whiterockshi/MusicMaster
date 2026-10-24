@@ -43,6 +43,22 @@ test("20 questions, persistence, mixed review, calendar, debug FIFO and mobile l
   await page.getByRole("button", { name: "Lv1を開始する" }).click();
   // Exercise Web Audio in real browser once, then advance time for the whole session.
   await page.clock.install();
+  const notes = [
+    "C",
+    "C#",
+    "D",
+    "D#",
+    "E",
+    "F",
+    "F#",
+    "G",
+    "G#",
+    "A",
+    "A#",
+    "B",
+  ];
+  const heard: number[] = [];
+  let wrongNote = 0;
   for (let i = 0; i < 20; i++) {
     await page.getByRole("button", { name: "音を聴く" }).click();
     await page.clock.runFor(4000);
@@ -51,11 +67,22 @@ test("20 questions, persistence, mixed review, calendar, debug FIFO and mobile l
         .getByRole("status")
         .filter({ hasText: "聞こえた音を選んでください" }),
     ).toBeVisible();
+    const frequency = await page.evaluate(() =>
+      (window as unknown as { testFrequencies: number[] }).testFrequencies
+        .filter((f) => f >= 260 && f <= 500)
+        .at(-1)!,
+    );
+    const note = Math.round(12 * Math.log2(frequency / 440) + 9);
+    heard.push(note);
+    if (i === 3) wrongNote = note;
     if (i < 3)
       await page.getByRole("button", { name: "わからない（未回答）" }).click();
     else
       await page
-        .getByRole("button", { name: i === 3 ? "D" : "C", exact: true })
+        .getByRole("button", {
+          name: notes[i === 3 ? (note + 1) % 12 : note],
+          exact: true,
+        })
         .click();
     await page
       .getByRole("button", { name: i === 19 ? "結果を見る" : "次の問題へ" })
@@ -65,6 +92,9 @@ test("20 questions, persistence, mixed review, calendar, debug FIFO and mobile l
     page.getByRole("heading", { name: "16 / 20問正解" }),
   ).toBeVisible();
   await expect(page.locator(".big-score")).toContainText("80");
+  expect(new Set(heard).size).toBe(12);
+  for (let n = 0; n < 12; n++)
+    expect(heard.filter((note) => note === n).length).toBeLessThanOrEqual(2);
   const frequencies = await page.evaluate(
     () => (window as unknown as { testFrequencies: number[] }).testFrequencies,
   );
@@ -84,7 +114,9 @@ test("20 questions, persistence, mixed review, calendar, debug FIFO and mobile l
   await page.getByRole("button", { name: "全1問をまとめて復習" }).click();
   await page.getByRole("button", { name: "音を聴く" }).click();
   await page.clock.runFor(4000);
-  await page.getByRole("button", { name: "C", exact: true }).click();
+  await page
+    .getByRole("button", { name: notes[wrongNote], exact: true })
+    .click();
   await page.getByRole("button", { name: "結果を見る" }).click();
   await expect(
     page.getByRole("heading", { name: "1 / 1問正解" }),
@@ -104,6 +136,10 @@ test("20 questions, persistence, mixed review, calendar, debug FIFO and mobile l
   await expect(
     page.getByRole("img", { name: "Lv1の日別平均得点グラフ" }),
   ).toBeVisible();
+  await expect(page.locator("section.row")).toHaveCount(1);
+  await expect(page.locator("section.row")).toContainText("Lv1");
+  const selectedDay = page.locator('.calendar button[aria-pressed="true"]');
+  await expect(selectedDay).toHaveAttribute("aria-label", /1回$/);
   await page.screenshot({
     path: "test-results/calendar-mobile.png",
     fullPage: true,
@@ -183,13 +219,11 @@ test("JSON backup roundtrip, cancellation, and desktop navigation", async ({
     debug: [],
   };
   page.once("dialog", (d) => d.accept());
-  await page
-    .getByLabel("JSONから復元（現在のデータを置換）")
-    .setInputFiles({
-      name: "backup.json",
-      mimeType: "application/json",
-      buffer: Buffer.from(JSON.stringify(backup)),
-    });
+  await page.getByLabel("JSONから復元（現在のデータを置換）").setInputFiles({
+    name: "backup.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(backup)),
+  });
   await expect(page.getByRole("status")).toContainText("データを復元しました");
   const download = page.waitForEvent("download");
   await page.getByRole("button", { name: "全データをJSON保存" }).click();
@@ -213,4 +247,34 @@ test("JSON backup roundtrip, cancellation, and desktop navigation", async ({
   await expect(
     page.getByRole("heading", { name: "聴くことから、はじめよう。" }),
   ).toBeVisible();
+});
+
+test("analysis is separated by level and empty levels never show Lv1 statistics", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "復習", exact: false })
+    .first()
+    .click();
+  await page.getByRole("button", { name: "苦手分析" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Lv1", exact: true }),
+  ).toBeVisible();
+  await expect(page.locator("section .row")).toHaveCount(12);
+  await page.getByRole("button", { name: "Lv2", exact: true }).click();
+  await expect(
+    page.getByText("Lv2のゲームと分析はベータ5で追加予定です。"),
+  ).toBeVisible();
+  await expect(page.locator("section .row")).toHaveCount(0);
+  await page.getByRole("button", { name: "Lv3", exact: true }).click();
+  await expect(
+    page.getByText("Lv3のゲームと分析はベータ5で追加予定です。"),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Lv1", exact: true }).click();
+  await expect(page.locator("section .row")).toHaveCount(12);
+  await page.screenshot({
+    path: "test-results/analysis-levels.png",
+    fullPage: true,
+  });
 });
