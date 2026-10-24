@@ -32,7 +32,15 @@ export const RANGES = {
   bass: { label: "ベース", octave: 1, minMidi: 28 },
 } as const;
 export type RangeMode = keyof typeof RANGES;
-export type Settings = { notation: "sharp" | "flat"; range: RangeMode };
+export type Settings = {
+  notation: "sharp" | "flat";
+  range: RangeMode;
+  inputMode?: "button" | "voice";
+  voiceAutoAdvance?: boolean;
+  voiceConsentVersion?: 1;
+  recordUnanswered?: boolean;
+  recordingConsentVersion?: 1;
+};
 export const DEFAULT_SETTINGS: Settings = { notation: "sharp", range: "high" };
 export type AnalysisReset = { at: string; counts: Record<string, number> };
 export type PitchLayout = 1 | 2;
@@ -162,6 +170,12 @@ export function generateQuestions(
   return shuffle(candidates, random).slice(0, 5);
 }
 export type Attempt = {
+  inputMode?: "button" | "voice";
+  recognizedText?: string;
+  voiceError?: string;
+  recordingStatus?: string;
+  recordingBytes?: number;
+  recordingMime?: string;
   layout?: PitchLayout;
   level?: Level;
   secondNote?: number;
@@ -178,6 +192,7 @@ export type Attempt = {
   mode: "normal" | "review";
 };
 export type Session = {
+  inputMode?: "button" | "voice";
   layout?: PitchLayout;
   id: string;
   started: string;
@@ -235,7 +250,19 @@ export function record(data: Data, a: Attempt): Data {
     level: a.level ?? session.level,
     range: a.range ?? session.range ?? ("high" as RangeMode),
   };
-  session.attempts.push(normalized);
+  // Unanswered diagnostics live only in the two-entry FIFO, not in every history item.
+  session.attempts.push(
+    unanswered(normalized)
+      ? {
+          ...normalized,
+          recognizedText: undefined,
+          voiceError: undefined,
+          recordingStatus: undefined,
+          recordingBytes: undefined,
+          recordingMime: undefined,
+        }
+      : normalized,
+  );
   const item = d.reviews.find(
     (r) => questionKey(r) === questionKey(normalized),
   );
@@ -390,6 +417,22 @@ export function validate(value: unknown): Data {
       !Object.hasOwn(RANGES, d.settings.range))
   )
     throw Error("設定形式が不正です");
+  if (d.settings) {
+    const settings = d.settings;
+    if (
+      (settings.inputMode !== undefined &&
+        !["button", "voice"].includes(settings.inputMode)) ||
+      (settings.voiceConsentVersion !== undefined &&
+        settings.voiceConsentVersion !== 1) ||
+      (settings.voiceAutoAdvance !== undefined &&
+        typeof settings.voiceAutoAdvance !== "boolean") ||
+      (settings.recordUnanswered !== undefined &&
+        typeof settings.recordUnanswered !== "boolean") ||
+      (settings.recordingConsentVersion !== undefined &&
+        settings.recordingConsentVersion !== 1)
+    )
+      throw Error("音声設定形式が不正です");
+  }
   if (d.analysisResets !== undefined) {
     if (
       !d.analysisResets ||
@@ -457,6 +500,8 @@ export function validate(value: unknown): Data {
       typeof s.timezone !== "string" ||
       s.timezone.length > 100 ||
       ![1, 2, 3].includes(s.level) ||
+      (s.inputMode !== undefined &&
+        !["button", "voice"].includes(s.inputMode)) ||
       (s.layout !== undefined && ![1, 2].includes(s.layout)) ||
       (s.range !== undefined && !Object.hasOwn(RANGES, s.range)) ||
       !["normal", "review"].includes(s.mode) ||
@@ -491,6 +536,23 @@ export function validate(value: unknown): Data {
       typeof a.id !== "string" ||
       a.id.length > 160 ||
       !validQuestion(a, a.level ?? fallback) ||
+      (a.inputMode !== undefined &&
+        !["button", "voice"].includes(a.inputMode)) ||
+      (a.recognizedText !== undefined &&
+        (typeof a.recognizedText !== "string" ||
+          a.recognizedText.length > 160)) ||
+      (a.voiceError !== undefined &&
+        (typeof a.voiceError !== "string" || a.voiceError.length > 80)) ||
+      (a.recordingStatus !== undefined &&
+        (typeof a.recordingStatus !== "string" ||
+          a.recordingStatus.length > 40)) ||
+      (a.recordingMime !== undefined &&
+        (typeof a.recordingMime !== "string" ||
+          a.recordingMime.length > 100)) ||
+      (a.recordingBytes !== undefined &&
+        (!Number.isInteger(a.recordingBytes) ||
+          a.recordingBytes < 0 ||
+          a.recordingBytes > 1048576)) ||
       (a.layout !== undefined && ![1, 2].includes(a.layout)) ||
       ((a.level ?? fallback) === 2 &&
         a.secondAnswer !== null &&

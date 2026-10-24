@@ -41,7 +41,19 @@ import {
   type Data,
   type Session,
 } from "./model";
-import { load, save } from "./storage";
+import { load, save, loadRecordings, type StorageOptions } from "./storage";
+import {
+  VoiceListener,
+  voiceSupport,
+  voiceErrorMessage,
+  classifyAlternatives,
+  parseVoice,
+} from "./voice";
+import {
+  prepareRecording,
+  type RecordingCapture,
+  type RecordingResult,
+} from "./recording";
 import {
   unlock,
   cue,
@@ -70,6 +82,7 @@ type Phase =
   | "waiting"
   | "playing"
   | "answer"
+  | "voice-starting"
   | "feedback"
   | "correction"
   | "paused";
@@ -79,6 +92,7 @@ const labels: Record<Phase, string> = {
   waiting: "音を待ちましょう",
   playing: "よく聴いてください",
   answer: "聞こえた音を選んでください",
+  "voice-starting": "マイクを準備しています",
   feedback: "回答結果",
   correction: "正解を聴き直しましょう",
   paused: "一時停止中",
@@ -166,6 +180,37 @@ function App() {
   const [analysisRange, setAnalysisRange] = useState<RangeMode>("high");
   const [graphLevel, setGraphLevel] = useState<Level>(1);
   const [graphRange, setGraphRange] = useState<RangeMode>("high");
+  const [voiceFallback, setVoiceFallback] = useState(false);
+  const [autoPaused, setAutoPaused] = useState(false);
+  const [voiceHint, setVoiceHint] = useState("");
+  const [voiceTranscript, setVoiceTranscript] = useState("");
+  const [voiceTestLevel, setVoiceTestLevel] = useState<Level>(1);
+  const [voiceTesting, setVoiceTesting] = useState(false);
+  const listener = useRef(new VoiceListener());
+  const testListener = useRef(new VoiceListener());
+  const capture = useRef<RecordingCapture | undefined>(undefined);
+  const voicePrepTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
+  const diagnostic = useRef<{
+    text: string;
+    error: string;
+    recordingStatus?: string;
+  }>({ text: "", error: "" });
+  const testTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
+  function stopVoice() {
+    clearTimeout(voicePrepTimer.current);
+    listener.current.stop();
+    capture.current?.cancel();
+    capture.current = undefined;
+  }
+  function stopTest() {
+    clearTimeout(testTimer.current);
+    testListener.current.stop();
+    setVoiceTesting(false);
+  }
   const dataRef = useRef(data);
   const generation = useRef(0);
   const busy = useRef(false);
@@ -191,11 +236,11 @@ function App() {
   const completed = data.sessions.filter(
     (s) => s.status === "complete" && s.mode === "normal",
   );
-  async function persist(next: Data) {
+  async function persist(next: Data, options: StorageOptions = {}) {
     dataRef.current = next;
     setData(next);
     setSaving(true);
-    const task = writes.current.catch(() => {}).then(() => save(next));
+    const task = writes.current.catch(() => {}).then(() => save(next, options));
     writes.current = task;
     try {
       await task;
@@ -229,11 +274,16 @@ function App() {
       );
     return () => {
       generation.current++;
+      stopVoice();
+      testListener.current.stop();
+      clearTimeout(testTimer.current);
       stopAudio();
     };
   }, []);
   function pause() {
+    setAutoPaused(true);
     generation.current++;
+    stopVoice();
     stopAudio();
     const nextPhase = phaseRef.current === "correction" ? "feedback" : "paused";
     phaseRef.current = nextPhase;
@@ -261,13 +311,68 @@ function App() {
     }, 100);
     return () => clearInterval(timer);
   }, [phase, index, sessionId]);
+  useEffect(() => {
+    if (
+      page !== "game" ||
+      session?.inputMode !== "voice" ||
+      voiceFallback ||
+      autoPaused ||
+      settings.voiceAutoAdvance === false ||
+      document.hidden
+    )
+      return;
+    const token = generation.current;
+    if (phase === "ready") {
+      const timer = setTimeout(() => {
+        if (token === generation.current && !document.hidden && !busy.current)
+          void play();
+      }, 150);
+      return () => clearTimeout(timer);
+    }
+    if (phase === "feedback" && lastAttempt && !saving && !busy.current) {
+      const timer = setTimeout(() => {
+        if (
+          token === generation.current &&
+          phaseRef.current === "feedback" &&
+          !document.hidden &&
+          !busy.current
+        )
+          void next();
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [
+    page,
+    phase,
+    index,
+    sessionId,
+    session?.inputMode,
+    voiceFallback,
+    autoPaused,
+    settings.voiceAutoAdvance,
+    lastAttempt,
+    saving,
+  ]);
   async function start(review = false, level: Level = 1) {
     if (busy.current) return;
     busy.current = true;
     try {
+      stopAudio();
+      setAutoPaused(false);
       if (volume) {
         await unlock();
         setSpeechUnavailable(!(await prepareSpeech()));
+      }
+      stopTest();
+      setVoiceFallback(false);
+      setVoiceHint("");
+      setVoiceTranscript("");
+      const wantsVoice =
+        settings.inputMode === "voice" && settings.voiceConsentVersion === 1;
+      const unsupported = wantsVoice ? voiceSupport() : undefined;
+      if (unsupported) {
+        setVoiceFallback(true);
+        setVoiceHint(unsupported);
       }
       const now = new Date().toISOString();
       const s: Session = {
@@ -279,6 +384,7 @@ function App() {
         total: review ? pending.length : SESSION_LENGTH[level],
         level,
         layout: CURRENT_LAYOUT,
+        inputMode: wantsVoice && !unsupported ? "voice" : "button",
         range: level === 3 ? "bass" : settings.range,
         attempts: [],
       };
@@ -314,8 +420,12 @@ function App() {
   }
   async function play() {
     if (busy.current) return;
+    setAutoPaused(false);
     busy.current = true;
     const token = ++generation.current;
+    stopVoice();
+    diagnostic.current = { text: "", error: "" };
+    setVoiceTranscript("");
     const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
     try {
       if (volume) await unlock();
@@ -345,15 +455,211 @@ function App() {
       if (volume) cue();
       await wait(150);
       if (token !== generation.current) return;
-      started.current = Date.now();
-      setRemaining(ANSWER_SECONDS[questions[index].level ?? 1]);
-      setPhase("answer");
+      if (session?.inputMode === "voice" && !voiceFallback) {
+        await beginVoice(token);
+      } else {
+        started.current = Date.now();
+        setRemaining(ANSWER_SECONDS[questions[index].level ?? 1]);
+        phaseRef.current = "answer";
+        setPhase("answer");
+      }
     } catch {
       setError("音声を開始できません。端末の音量を確認して再開してください。");
       setPhase("paused");
     } finally {
       if (token === generation.current) busy.current = false;
     }
+  }
+  function failVoice(code: string, token: number) {
+    if (token !== generation.current) return;
+    diagnostic.current.error = code;
+    setVoiceHint(
+      voiceErrorMessage(code) + " このセッションはボタン回答へ切り替えます。",
+    );
+    setVoiceFallback(true);
+    pause();
+  }
+  async function beginVoice(token: number) {
+    phaseRef.current = "voice-starting";
+    setPhase("voice-starting");
+    setVoiceHint("回答開始の合図の後だけ音声を受け付けます。");
+    let ready = false;
+    voicePrepTimer.current = setTimeout(
+      () => failVoice("start-timeout", token),
+      15000,
+    );
+    const recordEnabled =
+      settings.recordUnanswered && settings.recordingConsentVersion === 1;
+    if (recordEnabled) {
+      try {
+        const prepared = await prepareRecording();
+        if (token !== generation.current) {
+          prepared.cancel();
+          return;
+        }
+        capture.current = prepared;
+      } catch (e) {
+        if (token !== generation.current) return;
+        diagnostic.current.recordingStatus = "unavailable";
+        if (e instanceof DOMException && e.name === "NotAllowedError") {
+          failVoice("not-allowed", token);
+          return;
+        }
+        setVoiceHint("デバッグ録音は利用できません。音声認識だけを試します。");
+      }
+    }
+    if (token !== generation.current) return;
+    busy.current = false;
+    listener.current.start({
+      onReady: () => {
+        if (token !== generation.current || ready) return;
+        ready = true;
+        clearTimeout(voicePrepTimer.current);
+        capture.current?.start();
+        started.current = Date.now();
+        setRemaining(ANSWER_SECONDS[questions[index].level ?? 1]);
+        phaseRef.current = "answer";
+        setPhase("answer");
+        setVoiceHint("音声を受付中です。ボタンでも回答できます。");
+      },
+      onText: (texts) => {
+        if (
+          token !== generation.current ||
+          phaseRef.current !== "answer" ||
+          busy.current
+        )
+          return;
+        const raw = texts.join(" / ").slice(0, 160);
+        diagnostic.current.text = raw;
+        setVoiceTranscript(raw);
+        const result = classifyAlternatives(texts, questions[index].level ?? 1);
+        if (result.status !== "valid") {
+          diagnostic.current.error = result.status;
+          setVoiceHint(
+            result.status === "ambiguous"
+              ? "候補を一つに絞れません。もう一度音名だけを話してください。"
+              : "音名を判定できません。ドレミまたはコード名だけを話してください。",
+          );
+          return;
+        }
+        diagnostic.current.error = "";
+        const answer = result.answer;
+        const level = questions[index].level ?? 1;
+        if (level === 1) {
+          void submit(answer.notes[0], null, null, false, "voice", raw);
+          return;
+        }
+        if (level === 3) {
+          void submit(
+            answer.notes[0],
+            null,
+            answer.chord!,
+            false,
+            "voice",
+            raw,
+          );
+          return;
+        }
+        const notes =
+          answer.notes.length === 2
+            ? [...answer.notes]
+            : [...form.current.notes];
+        if (answer.notes.length === 1) {
+          const slot = notes[0] === null ? 0 : 1;
+          notes[slot] = answer.notes[0];
+        }
+        form.current = { notes, chord: null };
+        setFormNotes(notes);
+        setAnswerSlot(notes[0] === null ? 0 : 1);
+        if (notes[0] !== null && notes[1] !== null)
+          void submit(notes[0], notes[1], null, false, "voice", raw);
+        else setVoiceHint("1音受け取りました。続けて2音目を話してください。");
+      },
+      onError: (code, fatal) => {
+        if (token !== generation.current) return;
+        diagnostic.current.error = code;
+        if (fatal) failVoice(code, token);
+        else
+          setVoiceHint(
+            voiceErrorMessage(code) + " 回答時間内なら再度話せます。",
+          );
+      },
+    });
+  }
+  function changeInput(mode: "button" | "voice") {
+    if (mode === "button") {
+      stopTest();
+      void updateSettings({ inputMode: "button" });
+      return;
+    }
+    const unsupported = voiceSupport();
+    if (unsupported) {
+      setVoiceHint(unsupported);
+      return;
+    }
+    if (
+      settings.voiceConsentVersion !== 1 &&
+      !confirm(
+        "音声回答にはマイクを使います。音声はブラウザ・OS提供元（AppleやGoogle等）の認識サービスへ送信される場合があり、処理先はブラウザに依存します。認識結果の音名テキストを端末内に保存します。アプリ独自のサーバーへの送信はありません。音声回答を有効にしますか？",
+      )
+    )
+      return;
+    void updateSettings({ inputMode: "voice", voiceConsentVersion: 1 });
+  }
+  function changeRecording(enabled: boolean) {
+    if (
+      enabled &&
+      settings.recordingConsentVersion !== 1 &&
+      !confirm(
+        "回答受付中だけ一時録音し、未回答時のみ最新2件を端末内へ保存します。1件最大10秒・1MiB、3件目で最古の音声も削除します。有効回答の音声は破棄し、自動送信しません。録音の保存を有効にしますか？",
+      )
+    )
+      return;
+    void updateSettings({
+      recordUnanswered: enabled,
+      ...(enabled ? { recordingConsentVersion: 1 as const } : {}),
+    });
+  }
+  function testVoice() {
+    if (voiceTesting) {
+      stopTest();
+      return;
+    }
+    if (settings.voiceConsentVersion !== 1) {
+      setVoiceHint("先に音声回答を選択し、利用説明に同意してください。");
+      return;
+    }
+    const unsupported = voiceSupport();
+    if (unsupported) {
+      setVoiceHint(unsupported);
+      return;
+    }
+    setVoiceTesting(true);
+    setVoiceTranscript("");
+    setVoiceHint(
+      "マイクの許可後、音名を話してください。このテストでは録音を保存しません。",
+    );
+    testTimer.current = setTimeout(() => {
+      stopTest();
+      setVoiceHint("テストを終了しました。必要ならもう一度試してください。");
+    }, 15000);
+    testListener.current.start({
+      onReady: () => setVoiceHint("テスト受付中です。音名を話してください。"),
+      onText: (texts) => {
+        setVoiceTranscript(texts.join(" / ").slice(0, 160));
+        const result = classifyAlternatives(texts, voiceTestLevel);
+        setVoiceHint(
+          result.status === "valid"
+            ? `判定候補：${result.answer.notes.map((n) => noteNames[n]).join(" → ")}${result.answer.chord ?? ""}`
+            : "候補を確定できません。発話例を確認してください。",
+        );
+        stopTest();
+      },
+      onError: (code, fatal) => {
+        setVoiceHint(voiceErrorMessage(code));
+        if (fatal) stopTest();
+      },
+    });
   }
   async function replayCorrect() {
     const token = ++generation.current;
@@ -398,12 +704,22 @@ function App() {
     second: number | null = null,
     chord: ChordKind | null = null,
     useDraft = false,
+    source: "button" | "voice" = useDraft &&
+    session?.inputMode === "voice" &&
+    !voiceFallback
+      ? "voice"
+      : "button",
+    recognizedText = "",
   ) {
     if (phaseRef.current !== "answer" || busy.current) return;
     busy.current = true;
     setPhase("feedback");
     phaseRef.current = "feedback";
     const q = questions[index];
+    listener.current.stop();
+    clearTimeout(voicePrepTimer.current);
+    const recording = capture.current;
+    capture.current = undefined;
     if ((q.level ?? 1) === 2 && useDraft) {
       value = form.current.notes[0];
       second = form.current.notes[1];
@@ -427,14 +743,36 @@ function App() {
       at: new Date().toISOString(),
       elapsed: Date.now() - started.current,
       mode: session!.mode,
+      inputMode: source,
+      recognizedText:
+        source === "voice"
+          ? (recognizedText || diagnostic.current.text).slice(0, 160)
+          : undefined,
+      voiceError:
+        source === "voice" ? diagnostic.current.error.slice(0, 80) : undefined,
     };
+    const isUnanswered = unanswered(a);
+    const recorded = recording
+      ? await recording.finish(isUnanswered)
+      : undefined;
+    if (isUnanswered && source === "voice") {
+      a.recordingStatus =
+        recorded?.status ?? diagnostic.current.recordingStatus ?? "disabled";
+      a.recordingBytes = recorded?.blob?.size;
+      a.recordingMime = recorded?.blob?.type;
+    }
     setLastAttempt(a);
     if (volume) {
       if (attemptPoints(a) === 2 && !hasWrongAnswer(a)) cue();
       else feedback(fullyCorrect(a));
     }
     try {
-      await persist(record(dataRef.current, a));
+      await persist(record(dataRef.current, a), {
+        recording:
+          isUnanswered && recorded?.blob
+            ? { id: a.id, blob: recorded.blob }
+            : undefined,
+      });
     } catch {
     } finally {
       busy.current = false;
@@ -448,6 +786,7 @@ function App() {
   }
   async function next() {
     if (busy.current) return;
+    setAutoPaused(false);
     busy.current = true;
     try {
       if (index + 1 < questions.length) {
@@ -486,6 +825,7 @@ function App() {
     setPage("home");
   }
   const nav = (p: Page) => {
+    stopTest();
     setPage(p);
     setMessage("");
   };
@@ -527,7 +867,7 @@ function App() {
         >
           ◖ MusicSensor
         </button>
-        <span className="badge">BETA 5</span>
+        <span className="badge">BETA 6</span>
       </header>
       <div className="topline">
         <span>PERSONAL EAR TRAINING</span>
@@ -565,6 +905,14 @@ function App() {
           端末内の日本語音声が見つからないため、案内は画面表示になります。OS・ブラウザに日本語の読み上げ音声を追加してください。
         </p>
       )}
+      {page === "game" &&
+        voiceFallback &&
+        voiceHint &&
+        session?.inputMode === "button" && (
+          <p className="alert" role="status">
+            {voiceHint}
+          </p>
+        )}
       {error && (
         <p className="alert" role="alert">
           {error}
@@ -612,13 +960,19 @@ function App() {
           {tile("復習", "間違った音・苦手分析・カレンダー", "review")}
           {tile("サポート", "未回答例・データのバックアップ", "support")}
           <p className="muted">
-            ボタンで回答するローカル版です。記録はこのブラウザ内に保存されます。
+            ボタン／音声で回答できます。音声の利用設定はサポートから。記録はこのブラウザ内に保存されます。
           </p>
         </>
       )}
       {page === "stages" && (
         <>
-          <p className="intro">まずは12音の聞き分けから。</p>
+          <p className="intro">
+            回答方式：
+            {settings.inputMode === "voice"
+              ? "音声（ボタンも利用可能）"
+              : "ボタン"}
+            。変更はサポート＞設定で行えます。
+          </p>
           <section>
             <span className="eyebrow">AVAILABLE</span>
             <h2>Lv1　単音</h2>
@@ -963,6 +1317,95 @@ function App() {
       {page === "settings" && (
         <>
           <section>
+            <h2>回答方式</h2>
+            <fieldset>
+              <legend>入力方法</legend>
+              <label className="range-option">
+                <input
+                  type="radio"
+                  name="input-mode"
+                  checked={settings.inputMode !== "voice"}
+                  disabled={saving}
+                  onChange={() => changeInput("button")}
+                />
+                ボタン回答
+              </label>
+              <label className="range-option">
+                <input
+                  type="radio"
+                  name="input-mode"
+                  checked={settings.inputMode === "voice"}
+                  disabled={saving}
+                  onChange={() => changeInput("voice")}
+                />
+                音声回答（日本語）
+              </label>
+            </fieldset>
+            <p>
+              音声回答はマイクを使い、ブラウザ・OS提供元の認識サービスへ音声が送られる場合があります。提供元・通信要否はブラウザに依存します。アプリは外部APIキーや独自の音声サーバーを使いません。
+            </p>
+            {voiceSupport() && <p className="alert">{voiceSupport()}</p>}
+            <label className="range-option">
+              <input
+                type="checkbox"
+                checked={settings.voiceAutoAdvance ?? true}
+                disabled={settings.inputMode !== "voice" || saving}
+                onChange={(e) =>
+                  void updateSettings({ voiceAutoAdvance: e.target.checked })
+                }
+              />
+              音声回答で出題と次問を自動進行する
+            </label>
+            <h3>話し方</h3>
+            <p>
+              Lv1：「ド」「ファシャープ」「シフラット」
+              <br />
+              Lv2：「ド レ」、または1音ずつ
+              <br />
+              Lv3：「ド メジャーセブン」「レ マイナーセブン」「ソ セブン」「シ
+              マイナーセブン フラットファイブ」
+            </p>
+            <p className="muted">
+              M7は「メジャーセブン」、m7は「マイナーセブン」と話してください。「エムセブン」だけでは区別しません。
+            </p>
+            <label>
+              テストするレベル{" "}
+              <select
+                value={voiceTestLevel}
+                onChange={(e) => {
+                  stopTest();
+                  setVoiceTestLevel(Number(e.target.value) as Level);
+                }}
+              >
+                {[1, 2, 3].map((level) => (
+                  <option key={level} value={level}>
+                    Lv{level}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              disabled={settings.inputMode !== "voice" || saving}
+              onClick={testVoice}
+            >
+              {voiceTesting ? "音声テストを停止" : "音声入力をテスト"}
+            </button>
+            {voiceHint && <p role="status">{voiceHint}</p>}
+            {voiceTranscript && <p>認識テキスト：{voiceTranscript}</p>}
+            <label className="range-option">
+              <input
+                type="checkbox"
+                checked={settings.recordUnanswered ?? false}
+                disabled={settings.inputMode !== "voice" || saving}
+                onChange={(e) => changeRecording(e.target.checked)}
+              />
+              未回答時の音声を端末内に保存する
+            </label>
+            <p className="muted">
+              録音は初期OFF。回答受付中だけ一時録音し、未回答の最新2件のみ保存（1件10秒・1MiBまで）。回答成立時は破棄。3件目やバッファ削除で音声も削除します。録音は自動送信せず、JSONとは別にダウンロードできます。
+            </p>
+          </section>
+          <section>
             <h2>音名の表示</h2>
             <label className="setting-switch">
               <span>フラット表示（OFF：シャープ / ON：フラット）</span>
@@ -1009,7 +1452,7 @@ function App() {
       )}
       {page === "support" && (
         <>
-          {tile("設定", "シャープ・フラット表示 / 音域", "settings")}
+          {tile("設定", "回答方式・音声テスト・音名表示・音域", "settings")}
           <section>
             <h2>保存データの目安</h2>
             <p>
@@ -1020,13 +1463,16 @@ function App() {
               KiB
             </p>
             <p className="muted">
-              記録はこのブラウザのIndexedDBに保存されます。録音はありません。JSON換算はデータ量の目安で、実際のディスク使用量とは異なります。履歴の自動削除は行いません。
+              記録はこのブラウザのIndexedDBに保存されます。JSON換算には別保存のデバッグ音声は含みません（音声は最大2MiB）。実ディスク使用量とは異なります。履歴の自動削除は行いません。
             </p>
           </section>
           <section>
             <h2>未回答例のバッファ</h2>
             <p>{data.debug.length} / 2件 · 最新2件をFIFO保存</p>
-            <p className="muted">この版ではマイク・録音を利用しません。</p>
+            <p className="muted">
+              音声回答と録音の同意をした場合だけ、未回答時の音声を保存します。録音はJSONバックアップに含まれません。
+            </p>
+            <DebugAudio debug={data.debug} />
             {data.debug.map((a) => (
               <details key={a.id}>
                 <summary>
@@ -1049,7 +1495,11 @@ function App() {
             <button
               disabled={!data.debug.length}
               onClick={() => {
-                if (confirm("未回答例だけを削除しますか？"))
+                if (
+                  confirm(
+                    "未回答のデバッグ例と保存音声を削除しますか？ セッション履歴は残ります。",
+                  )
+                )
                   void persist({ ...dataRef.current, debug: [] }).catch(
                     () => {},
                   );
@@ -1117,14 +1567,24 @@ function App() {
                     );
                     if (
                       !confirm(
-                        "現在の全データをこのJSONで置き換えます。よろしいですか？",
+                        "現在の全データをこのJSONで置き換えます。JSONに音声は含まれないため、既存の保存音声も削除します。よろしいですか？",
                       )
                     )
                       return;
+                    if (d.settings)
+                      d.settings = {
+                        ...d.settings,
+                        inputMode: "button",
+                        recordUnanswered: false,
+                        voiceConsentVersion: undefined,
+                        recordingConsentVersion: undefined,
+                      };
                     for (const s of d.sessions)
                       if (s.status === "active") s.status = "interrupted";
-                    await persist(d);
-                    setMessage("データを復元しました。");
+                    await persist(d, { clearAudio: true });
+                    setMessage(
+                      "データを復元しました。音声ファイルはJSONに含まれません。音声入力と録音は、設定から改めて同意して有効にしてください。",
+                    );
                   } catch (e) {
                     setMessage(
                       e instanceof Error ? e.message : "復元に失敗しました",
@@ -1168,7 +1628,13 @@ function App() {
                       : "×"
                 : "♫"}
             </div>
-            <h2 role="status">{labels[phase]}</h2>
+            <h2 role="status">
+              {phase === "answer" &&
+              session.inputMode === "voice" &&
+              !voiceFallback
+                ? "音名を話してください"
+                : labels[phase]}
+            </h2>
             {phase === "ready" && (
               <>
                 <p>
@@ -1192,6 +1658,15 @@ function App() {
                 </button>
               </>
             )}
+            {(phase === "answer" ||
+              phase === "voice-starting" ||
+              phase === "paused") &&
+              session.inputMode === "voice" && (
+                <div className="voice-status">
+                  <p role="status">{voiceHint}</p>
+                  {voiceTranscript && <small>認識：{voiceTranscript}</small>}
+                </div>
+              )}
             {phase === "answer" && (
               <p>
                 残り <strong>{remaining}</strong> 秒
@@ -1232,7 +1707,7 @@ function App() {
                 )}
                 <button
                   className="primary"
-                  disabled={saving || phase === "correction"}
+                  disabled={saving || phase === "correction" || busy.current}
                   onClick={() => void next()}
                 >
                   {index + 1 === questions.length ? "結果を見る" : "次の問題へ"}{" "}
@@ -1378,10 +1853,69 @@ function App() {
         </>
       )}
       <footer>
-        <span>MusicSensor / Beta 5</span>
+        <span>MusicSensor / Beta 6</span>
         <span>{saving ? "保存中…" : "LOCAL FIRST"}</span>
       </footer>
     </main>
+  );
+}
+function DebugAudio({ debug }: { debug: Attempt[] }) {
+  const [recordings, setRecordings] = useState<
+    Record<string, { blob: Blob; url: string }>
+  >({});
+  useEffect(() => {
+    let active = true;
+    const urls: string[] = [];
+    setRecordings({});
+    loadRecordings(debug.map((a) => a.id))
+      .then((blobs) => {
+        if (!active) return;
+        const loaded = Object.fromEntries(
+          Object.entries(blobs).map(([id, blob]) => {
+            const url = URL.createObjectURL(blob);
+            urls.push(url);
+            return [id, { blob, url }];
+          }),
+        );
+        setRecordings(loaded);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+      urls.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [debug]);
+  return (
+    <>
+      {debug.map((a) => {
+        const recording = recordings[a.id];
+        return recording ? (
+          <section key={a.id}>
+            <p>
+              {format(a.at)} · 音声 {(recording.blob.size / 1024).toFixed(1)}{" "}
+              KiB
+            </p>
+            <audio controls src={recording.url} />
+            <button
+              onClick={() => {
+                const type = recording.blob.type;
+                const extension = type.includes("mp4")
+                  ? "m4a"
+                  : type.includes("ogg")
+                    ? "ogg"
+                    : "webm";
+                const link = document.createElement("a");
+                link.href = recording.url;
+                link.download = `voice-debug-${a.id.replace(/[^a-zA-Z0-9_-]/g, "_")}.${extension}`;
+                link.click();
+              }}
+            >
+              音声ファイルを保存
+            </button>
+          </section>
+        ) : null;
+      })}
+    </>
   );
 }
 function AccuracyChart({
