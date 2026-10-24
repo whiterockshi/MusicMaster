@@ -21,7 +21,8 @@ async function tones(page: Page) {
         .beta5Tones,
   );
 }
-const pitch = (hz: number) => Math.round(12 * Math.log2(hz / 440) + 9);
+const midi = (hz: number) => Math.round(69 + 12 * Math.log2(hz / 440));
+const pitch = (hz: number) => ((midi(hz) % 12) + 12) % 12;
 
 test("Lv2 full session: two ordered answers, partial points, wrong replay and persistence", async ({
   page,
@@ -111,15 +112,18 @@ test("Lv3 full session: arpeggio then simultaneous chord, 48-class answer and ra
   page,
 }) => {
   await instrument(page);
+  await page.addInitScript(() => {
+    Math.random = () => 0.999999;
+  });
   await page.goto("/");
   await page.getByRole("button", { name: "トレーニングをはじめる" }).click();
   await page.getByRole("button", { name: "Lv3を開始する" }).click();
   await page.clock.install();
   const qualities: Record<string, string> = {
-    "0,4,7,11": "M7",
-    "0,3,7,10": "m7",
-    "0,4,7,10": "7",
-    "0,3,6,10": "m7b5",
+    "0,16,19,23": "M7",
+    "0,15,19,22": "m7",
+    "0,16,19,22": "7",
+    "0,15,18,22": "m7b5",
   };
   for (let i = 0; i < 5; i++) {
     const before = (await tones(page)).length;
@@ -130,9 +134,15 @@ test("Lv3 full session: arpeggio then simultaneous chord, 48-class answer and ra
     ).toBeEnabled();
     const played = (await tones(page)).slice(before).filter((t) => t.hz < 1000);
     expect(played).toHaveLength(8);
-    const pitches = played.slice(0, 4).map((t) => pitch(t.hz));
-    const root = pitches[0];
-    const quality = qualities[pitches.map((n) => n - root).join(",")];
+    if (i === 0) {
+      const expected = [65.40639133, 164.81377846, 195.99771799, 246.94165063];
+      played
+        .slice(0, 4)
+        .forEach((t, n) => expect(t.hz).toBeCloseTo(expected[n], 3));
+    }
+    const pitches = played.slice(0, 4).map((t) => midi(t.hz));
+    const root = pitches[0] % 12;
+    const quality = qualities[pitches.map((n) => n - pitches[0]).join(",")];
     expect(quality).toBeTruthy();
     for (let n = 0; n < 4; n++) {
       expect(played[n + 4].hz).toBeCloseTo(played[n].hz, 2);
@@ -188,6 +198,8 @@ test("Lv3 full session: arpeggio then simultaneous chord, 48-class answer and ra
   const { readFile } = await import("node:fs/promises");
   const backup = JSON.parse(await readFile(path!, "utf8"));
   expect(backup.sessions[0].level).toBe(3);
+  expect(backup.sessions[0].range).toBe("bass");
+  expect(backup.sessions[0].layout).toBe(2);
   expect(backup.sessions[0].attempts).toHaveLength(5);
   expect(
     backup.sessions[0].attempts.every(
@@ -276,7 +288,7 @@ test("mixed Lv1/Lv2/Lv3 review uses original range and removes only fully solved
         .click();
       await page.getByRole("button", { name: "この回答で判定する" }).click();
     } else if (played.length === 8) {
-      const raw = played.slice(0, 4).map((t) => pitch(t.hz));
+      const raw = played.slice(0, 4).map((t) => midi(t.hz));
       const quality = qualityByIntervals[raw.map((n) => n - raw[0]).join(",")];
       await page
         .getByRole("group", { name: "コードの種類" })

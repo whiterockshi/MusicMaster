@@ -27,16 +27,40 @@ export const FLAT_NOTES = [
   "B",
 ];
 export const RANGES = {
-  high: { label: "Highギター", octave: 4 },
-  low: { label: "Lowギター", octave: 3 },
-  bass: { label: "ベース", octave: 2 },
+  high: { label: "Highギター", octave: 3, minMidi: 52 },
+  low: { label: "Lowギター", octave: 2, minMidi: 40 },
+  bass: { label: "ベース", octave: 1, minMidi: 28 },
 } as const;
 export type RangeMode = keyof typeof RANGES;
 export type Settings = { notation: "sharp" | "flat"; range: RangeMode };
 export const DEFAULT_SETTINGS: Settings = { notation: "sharp", range: "high" };
 export type AnalysisReset = { at: string; counts: Record<string, number> };
-export function frequency(note: number, range: RangeMode = "high") {
-  return 440 * 2 ** (((RANGES[range].octave + 1) * 12 + note - 69) / 12);
+export type PitchLayout = 1 | 2;
+export const CURRENT_LAYOUT: PitchLayout = 2;
+export function midiFrequency(midi: number) {
+  return 440 * 2 ** ((midi - 69) / 12);
+}
+export function pitchMidi(
+  note: number,
+  range: RangeMode = "high",
+  layout: PitchLayout = CURRENT_LAYOUT,
+) {
+  if (layout === 1) return { high: 60, low: 48, bass: 36 }[range] + note;
+  return (
+    RANGES[range].minMidi +
+    (((note % 12) - 4 + 12) % 12) +
+    12 * Math.floor(note / 12)
+  );
+}
+export function frequency(
+  note: number,
+  range: RangeMode = "high",
+  layout: PitchLayout = CURRENT_LAYOUT,
+) {
+  return midiFrequency(pitchMidi(note, range, layout));
+}
+export function midiLabel(midi: number, names: readonly string[] = NOTES) {
+  return `${names[((midi % 12) + 12) % 12]}${Math.floor(midi / 12) - 1}`;
 }
 export type Level = 1 | 2 | 3;
 export const SESSION_LENGTH: Record<Level, number> = { 1: 20, 2: 10, 3: 5 };
@@ -50,6 +74,7 @@ export const CHORDS = {
 export type ChordKind = keyof typeof CHORDS;
 export const CHORD_KINDS: ChordKind[] = ["M7", "m7", "7", "m7b5"];
 export type Question = {
+  layout?: PitchLayout;
   note: number;
   range: RangeMode;
   level?: Level;
@@ -57,13 +82,14 @@ export type Question = {
   chord?: ChordKind;
 };
 export function questionKey(q: {
+  layout?: PitchLayout;
   note: number;
   range?: RangeMode;
   level?: Level;
   secondNote?: number;
   chord?: ChordKind;
 }) {
-  return `${q.level ?? 1}:${q.range ?? "high"}:${q.note}:${q.secondNote ?? ""}:${q.chord ?? ""}`;
+  return `${q.layout ?? 1}:${q.level ?? 1}:${q.range ?? "high"}:${q.note}:${q.secondNote ?? ""}:${q.chord ?? ""}`;
 }
 export function questionLabel(
   q: { note: number; level?: Level; secondNote?: number; chord?: ChordKind },
@@ -108,21 +134,35 @@ export function generateQuestions(
   random = Math.random,
 ): Question[] {
   if (level === 1)
-    return levelOneQuestions(random).map((note) => ({ note, range, level }));
+    return levelOneQuestions(random).map((note) => ({
+      note,
+      range,
+      level,
+      layout: CURRENT_LAYOUT,
+    }));
   if (level === 2) {
     const candidates = NOTES.flatMap((_, note) =>
       NOTES.flatMap((_, secondNote) =>
-        note === secondNote ? [] : [{ note, secondNote, level, range }],
+        note === secondNote
+          ? []
+          : [{ note, secondNote, level, range, layout: CURRENT_LAYOUT }],
       ),
     );
     return shuffle(candidates, random).slice(0, 10);
   }
   const candidates = NOTES.flatMap((_, note) =>
-    CHORD_KINDS.map((chord) => ({ note, range, level, chord })),
+    CHORD_KINDS.map((chord) => ({
+      note,
+      range: "bass" as RangeMode,
+      level,
+      chord,
+      layout: CURRENT_LAYOUT,
+    })),
   );
   return shuffle(candidates, random).slice(0, 5);
 }
 export type Attempt = {
+  layout?: PitchLayout;
   level?: Level;
   secondNote?: number;
   secondAnswer?: number | null;
@@ -138,6 +178,7 @@ export type Attempt = {
   mode: "normal" | "review";
 };
 export type Session = {
+  layout?: PitchLayout;
   id: string;
   started: string;
   timezone: string;
@@ -150,6 +191,7 @@ export type Session = {
   attempts: Attempt[];
 };
 export type Review = {
+  layout?: PitchLayout;
   level?: Level;
   secondNote?: number;
   chord?: ChordKind;
@@ -189,6 +231,7 @@ export function record(data: Data, a: Attempt): Data {
     return d;
   const normalized = {
     ...a,
+    layout: a.layout ?? session.layout ?? 1,
     level: a.level ?? session.level,
     range: a.range ?? session.range ?? ("high" as RangeMode),
   };
@@ -206,6 +249,7 @@ export function record(data: Data, a: Attempt): Data {
       d.reviews.push({
         note: a.note,
         level: normalized.level,
+        layout: normalized.layout,
         range: normalized.range,
         secondNote: a.secondNote,
         chord: a.chord,
@@ -327,7 +371,11 @@ export function validate(value: unknown): Data {
     !Array.isArray(d.debug)
   )
     throw Error("対応していないJSON形式です");
-  if (d.sessions.length > 10000 || d.reviews.length > 612 || d.debug.length > 2)
+  if (
+    d.sessions.length > 10000 ||
+    d.reviews.length > 1224 ||
+    d.debug.length > 2
+  )
     throw Error("データ件数が上限を超えています");
   const date = (s: unknown) =>
     typeof s === "string" && Number.isFinite(Date.parse(s));
@@ -409,12 +457,13 @@ export function validate(value: unknown): Data {
       typeof s.timezone !== "string" ||
       s.timezone.length > 100 ||
       ![1, 2, 3].includes(s.level) ||
+      (s.layout !== undefined && ![1, 2].includes(s.layout)) ||
       (s.range !== undefined && !Object.hasOwn(RANGES, s.range)) ||
       !["normal", "review"].includes(s.mode) ||
       !["active", "complete", "interrupted"].includes(s.status) ||
       !Number.isInteger(s.total) ||
       s.total < 1 ||
-      s.total > 612 ||
+      s.total > 1224 ||
       !Array.isArray(s.attempts) ||
       s.attempts.length > s.total ||
       (s.mode === "normal" &&
@@ -442,6 +491,7 @@ export function validate(value: unknown): Data {
       typeof a.id !== "string" ||
       a.id.length > 160 ||
       !validQuestion(a, a.level ?? fallback) ||
+      (a.layout !== undefined && ![1, 2].includes(a.layout)) ||
       ((a.level ?? fallback) === 2 &&
         a.secondAnswer !== null &&
         !note(a.secondAnswer)) ||
@@ -467,6 +517,7 @@ export function validate(value: unknown): Data {
       !note(r.note) ||
       (r.range !== undefined && !Object.hasOwn(RANGES, r.range)) ||
       !validQuestion(r, r.level ?? 1) ||
+      (r.layout !== undefined && ![1, 2].includes(r.layout)) ||
       notes.has(questionKey(r)) ||
       !date(r.first) ||
       !date(r.last) ||
@@ -493,6 +544,7 @@ export function migrateReviews(data: Data): Data {
     .flatMap((s) =>
       s.attempts.map((a) => ({
         ...a,
+        layout: a.layout ?? s.layout ?? 1,
         level: a.level ?? s.level,
         range: a.range ?? s.range ?? ("high" as RangeMode),
       })),
@@ -510,6 +562,7 @@ export function migrateReviews(data: Data): Data {
         d.reviews.push({
           note: a.note,
           level: a.level ?? 1,
+          layout: a.layout ?? 1,
           secondNote: a.secondNote,
           chord: a.chord,
           range: a.range,
@@ -522,8 +575,17 @@ export function migrateReviews(data: Data): Data {
       item.pending = false;
   }
   for (const old of data.reviews) {
-    if (!d.reviews.some((r) => questionKey(r) === questionKey(old)))
-      d.reviews.push({ ...old, range: old.range ?? "high" });
+    const represented =
+      old.range === undefined
+        ? history.some(
+            (a) =>
+              a.note === old.note &&
+              (a.level ?? 1) === (old.level ?? 1) &&
+              a.secondNote === old.secondNote &&
+              a.chord === old.chord,
+          )
+        : d.reviews.some((r) => questionKey(r) === questionKey(old));
+    if (!represented) d.reviews.push({ ...old, range: old.range ?? "high" });
   }
   return d;
 }
@@ -605,4 +667,18 @@ export function spokenQuestion(q: Question, notation: "sharp" | "flat") {
   if (q.level === 3)
     return `${root}、${{ M7: "メジャーセブン", m7: "マイナーセブン", "7": "セブン", m7b5: "マイナーセブンフラットファイブ" }[q.chord!]}`;
   return root;
+}
+
+export function questionPitches(q: Question): number[] {
+  const root = pitchMidi(q.note, q.range, q.layout ?? 1);
+  if (q.level === 2)
+    return [root, pitchMidi(q.secondNote!, q.range, q.layout ?? 1)];
+  if (q.level === 3) {
+    const base = (q.layout ?? 1) === 2 ? pitchMidi(q.note, "bass", 2) : root;
+    return CHORDS[q.chord!].map(
+      (interval, i) =>
+        base + interval + ((q.layout ?? 1) === 2 && i > 0 ? 12 : 0),
+    );
+  }
+  return [root];
 }

@@ -2,6 +2,10 @@ import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import {
   NOTES,
+  CURRENT_LAYOUT,
+  questionPitches,
+  midiLabel,
+  type PitchLayout,
   SESSION_LENGTH,
   ANSWER_SECONDS,
   CHORD_KINDS,
@@ -140,14 +144,15 @@ function App() {
     range?: RangeMode;
     secondNote?: number;
     chord?: ChordKind;
+    layout?: PitchLayout;
   }) {
     const range = q.range ?? "high";
-    const octave = RANGES[range].octave;
-    const label =
-      (q.level ?? 1) === 2
-        ? `${noteNames[q.note]}${octave} → ${noteNames[q.secondNote!]}${octave}`
-        : `${noteNames[q.note]}${octave}${q.chord ?? ""}`;
-    return `${label}（${RANGES[range].label}）`;
+    const pitches = questionPitches({ ...q, range }).map((midi) =>
+      midiLabel(midi, noteNames),
+    );
+    if (q.level === 3)
+      return `${noteNames[q.note]}${q.chord}（${pitches.join("・")}）`;
+    return `${pitches.join(" → ")}（${RANGES[range].label}）`;
   }
 
   const [index, setIndex] = useState(0);
@@ -273,7 +278,8 @@ function App() {
         mode: review ? "review" : "normal",
         total: review ? pending.length : SESSION_LENGTH[level],
         level,
-        range: settings.range,
+        layout: CURRENT_LAYOUT,
+        range: level === 3 ? "bass" : settings.range,
         attempts: [],
       };
       if (!s.total) return;
@@ -287,6 +293,7 @@ function App() {
           ? shuffle(
               pending.map((r) => ({
                 note: r.note,
+                layout: r.layout ?? 1,
                 range: r.range ?? "high",
                 level: r.level ?? 1,
                 secondNote: r.secondNote,
@@ -409,6 +416,7 @@ function App() {
       id: `${sessionId}:${index}`,
       sessionId,
       note: q.note,
+      layout: q.layout ?? 1,
       range: q.range,
       level: q.level ?? 1,
       secondNote: q.secondNote,
@@ -615,8 +623,8 @@ function App() {
             <span className="eyebrow">AVAILABLE</span>
             <h2>Lv1　単音</h2>
             <p>
-              {RANGES[settings.range].label}（C{RANGES[settings.range].octave}
-              〜B{RANGES[settings.range].octave}
+              {RANGES[settings.range].label}（E{RANGES[settings.range].octave}
+              〜Eb{RANGES[settings.range].octave + 1}
               ）の全12音が必ず出題されます（各1〜2回）。
               <br />
               聞こえた音をCDEのボタンで回答します。
@@ -647,7 +655,7 @@ function App() {
               <p>
                 {n === 2
                   ? "異なる2音を順番に回答。10問・50点満点・回答10秒。部分点あり。"
-                  : "分散和音と同時和音を聞いて回答。5問・25点満点。"}
+                  : "低音ルート＋1オクターブ上げた3・5・7度。分散→同時発音。5問・25点満点。"}
               </p>
               <button className="primary" onClick={() => void start(false, n)}>
                 Lv{n}を開始する →
@@ -685,6 +693,7 @@ function App() {
           {pending.map((r) => (
             <section className="row review-item" key={questionKey(r)}>
               <strong>{describeQuestion(r)}</strong>
+              {(r.layout ?? 1) === 1 && <small>旧音域の問題</small>}
               <span>
                 誤答 {r.count}回<small>最後の誤答 {format(r.last)}</small>
               </span>
@@ -715,6 +724,7 @@ function App() {
                 .flatMap((s) =>
                   s.attempts.map((a) => ({
                     ...a,
+                    layout: a.layout ?? s.layout ?? 1,
                     level: a.level ?? s.level,
                     range: a.range ?? s.range ?? "high",
                   })),
@@ -750,7 +760,10 @@ function App() {
               <button
                 key={level}
                 aria-pressed={analysisLevel === level}
-                onClick={() => setAnalysisLevel(level as Level)}
+                onClick={() => {
+                  setAnalysisLevel(level as Level);
+                  if (level === 3) setAnalysisRange("bass");
+                }}
               >
                 Lv{level}
               </button>
@@ -764,6 +777,12 @@ function App() {
           <h2>
             Lv{analysisLevel} · {RANGES[analysisRange].label}
           </h2>
+          <p className="muted">
+            累計には旧音域の履歴も含みます。
+            {analysisLevel === 3
+              ? "新配置のLv3はベース側に記録します。旧配置の他音域も選んで確認できます。"
+              : ""}
+          </p>
           {
             <>
               <p>全期間の記録は残し、リセット後の集計だけを初期化します。</p>
@@ -916,7 +935,10 @@ function App() {
                 <button
                   key={level}
                   aria-pressed={graphLevel === level}
-                  onClick={() => setGraphLevel(level as Level)}
+                  onClick={() => {
+                    setGraphLevel(level as Level);
+                    if (level === 3) setGraphRange("bass");
+                  }}
                 >
                   Lv{level}
                 </button>
@@ -933,7 +955,7 @@ function App() {
             </p>
             <Graph data={data} level={graphLevel} range={graphRange} />
             <p className="muted">
-              各レベル・音域を個別に集計します。データがない日は0点にしません。
+              各レベル・音域を個別に集計します。データがない日は0点にしません。新配置のLv3はベース側に記録します。
             </p>
           </section>
         </>
@@ -975,12 +997,12 @@ function App() {
                       void updateSettings({ range: key as Settings["range"] })
                     }
                   />
-                  {r.label}（C{r.octave}〜B{r.octave}）
+                  {r.label}（E{r.octave}〜Eb{r.octave + 1}）
                 </label>
               ))}
             </fieldset>
             <p className="muted">
-              次に開始する通常練習に適用します。復習は誤答時の音域で鳴らします。音色は共通のサイン波です。
+              Lv1・Lv2の次回練習に適用します。Lv3は選択にかかわらずベースのルート＋上声の配置です（CM7＝C2・E3・G3・B3）。復習は誤答時の配置を保ちます。A4＝440Hz、サイン波を使います。
             </p>
           </section>
         </>
@@ -1052,7 +1074,7 @@ function App() {
             <button
               onClick={() => {
                 const rows = [
-                  "session_id,started,mode,status,level,score,total,answered,range",
+                  "session_id,started,mode,status,level,score,total,answered,range,pitch_layout",
                 ];
                 for (const s of data.sessions)
                   rows.push(
@@ -1066,6 +1088,7 @@ function App() {
                       s.total,
                       s.attempts.length,
                       s.range ?? "high",
+                      s.layout ?? 1,
                     ].join(","),
                   );
                 download(

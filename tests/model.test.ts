@@ -167,8 +167,8 @@ describe("settings and analysis reset", () => {
       expect(frequency(note, "high")).toBeCloseTo(frequency(note, "low") * 2);
       expect(frequency(note, "low")).toBeCloseTo(frequency(note, "bass") * 2);
     }
-    expect(frequency(9, "high")).toBe(440);
-    expect(frequency(0, "bass")).toBeCloseTo(65.4064, 3);
+    expect(frequency(9, "high", 1)).toBe(440);
+    expect(frequency(0, "bass", 1)).toBeCloseTo(65.4064, 3);
   });
 });
 

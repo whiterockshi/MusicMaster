@@ -71,10 +71,11 @@ test("20 questions, persistence, mixed review, calendar, debug FIFO and mobile l
     ).toBeVisible();
     const frequency = await page.evaluate(() =>
       (window as unknown as { testFrequencies: number[] }).testFrequencies
-        .filter((f) => f >= 260 && f <= 500)
+        .filter((f) => f >= 160 && f < 330)
         .at(-1)!,
     );
-    const note = Math.round(12 * Math.log2(frequency / 440) + 9);
+    const note =
+      ((Math.round(12 * Math.log2(frequency / 440) + 9) % 12) + 12) % 12;
     heard.push(note);
     if (i === 3) wrongNote = note;
     if (i < 3)
@@ -99,7 +100,7 @@ test("20 questions, persistence, mixed review, calendar, debug FIFO and mobile l
       ).toBeEnabled();
       const replayFrequency = await page.evaluate(() =>
         (window as unknown as { testFrequencies: number[] }).testFrequencies
-          .filter((f) => f >= 260 && f <= 500)
+          .filter((f) => f >= 160 && f < 330)
           .at(-1)!,
       );
       expect(replayFrequency).toBeCloseTo(frequency, 3);
@@ -122,8 +123,8 @@ test("20 questions, persistence, mixed review, calendar, debug FIFO and mobile l
   expect(frequencies).toContain(784);
   expect(frequencies).toContain(1047);
   expect(frequencies).toContain(150);
-  expect(frequencies.some((f) => Math.abs(f - 391.99543598) < 0.01)).toBe(true);
-  expect(frequencies.some((f) => Math.abs(f - 415.30469758) < 0.01)).toBe(true);
+  expect(frequencies.some((f) => Math.abs(f - 195.99771799) < 0.01)).toBe(true);
+  expect(frequencies.some((f) => Math.abs(f - 207.65234879) < 0.01)).toBe(true);
   await page.reload();
   await page
     .getByRole("button", { name: "復習", exact: false })
@@ -291,7 +292,7 @@ test("analysis is separated by level and empty levels never show Lv1 statistics"
   await expect(page.locator(".accuracy-chart svg")).toHaveCount(2);
   await page.getByRole("button", { name: "Lv3", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "Lv3 · Highギター" }),
+    page.getByRole("heading", { name: "Lv3 · ベース" }),
   ).toBeVisible();
   await expect(
     page.locator(".accuracy-chart").first().locator("rect"),
@@ -323,7 +324,7 @@ test("flat notation and bass settings persist and change actual audio output", a
   await page.getByRole("button", { name: "サポート", exact: false }).click();
   await page.getByRole("button", { name: "設定", exact: false }).click();
   await page.getByRole("switch", { name: "フラット表示" }).check();
-  await page.getByLabel("ベース（C2〜B2）").check();
+  await page.getByLabel("ベース（E1〜Eb2）").check();
   await expect(page.locator("footer")).toContainText("LOCAL FIRST");
   await page.reload();
   await page.getByRole("button", { name: "サポート", exact: false }).click();
@@ -331,7 +332,7 @@ test("flat notation and bass settings persist and change actual audio output", a
   await expect(
     page.getByRole("switch", { name: "フラット表示" }),
   ).toBeChecked();
-  await expect(page.getByLabel("ベース（C2〜B2）")).toBeChecked();
+  await expect(page.getByLabel("ベース（E1〜Eb2）")).toBeChecked();
   await page.screenshot({
     path: "test-results/settings-mobile.png",
     fullPage: true,
@@ -339,7 +340,7 @@ test("flat notation and bass settings persist and change actual audio output", a
   await page.getByRole("button", { name: "◖ MusicSensor" }).click();
   await page.getByRole("button", { name: "トレーニングをはじめる" }).click();
   await expect(
-    page.getByText("ベース（C2〜B2）の全12音", { exact: false }),
+    page.getByText("ベース（E1〜Eb2）の全12音", { exact: false }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Lv1を開始する" }).click();
   await page.clock.install();
@@ -353,7 +354,7 @@ test("flat notation and bass settings persist and change actual audio output", a
   ).toHaveCount(0);
   const pitches = await page.evaluate(() =>
     (window as unknown as { testFrequencies: number[] }).testFrequencies.filter(
-      (f) => f >= 65 && f < 124,
+      (f) => f >= 41 && f < 78,
     ),
   );
   expect(pitches).toHaveLength(1);

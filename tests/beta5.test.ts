@@ -169,8 +169,8 @@ describe("short sessions and pitch regression", () => {
   });
   it("checks High guitar G4 against G sharp and normalizes chart scores", async () => {
     const { frequency, daily } = await import("../src/model");
-    expect(frequency(7, "high")).toBeCloseTo(391.99543598, 6);
-    expect(frequency(8, "high")).toBeCloseTo(415.30469758, 6);
+    expect(frequency(7, "high", 1)).toBeCloseTo(391.99543598, 6);
+    expect(frequency(8, "high", 1)).toBeCloseTo(415.30469758, 6);
     const s = {
       ...session(3),
       total: 5,
@@ -185,5 +185,94 @@ describe("short sessions and pitch regression", () => {
       ),
     };
     expect(daily({ ...empty(), sessions: [s] }, 3, "bass")[0].points).toBe(100);
+  });
+});
+
+describe("E-based ranges and split chord voicing", () => {
+  it("places twelve pitch classes from E through Eb, with A4 at 440Hz", async () => {
+    const { pitchMidi, midiFrequency } = await import("../src/model");
+    for (const [range, min] of [
+      ["bass", 28],
+      ["low", 40],
+      ["high", 52],
+    ] as const) {
+      const midis = Array.from({ length: 12 }, (_, n) =>
+        pitchMidi(n, range, 2),
+      );
+      expect([...midis].sort((a, b) => a - b)).toEqual(
+        Array.from({ length: 12 }, (_, i) => min + i),
+      );
+    }
+    expect(midiFrequency(69)).toBe(440);
+  });
+  it("voices CM7 as C2 E3 G3 B3 and applies the split across all 48 chords", async () => {
+    const { questionPitches, midiLabel, CHORDS, pitchMidi } =
+      await import("../src/model");
+    expect(
+      questionPitches({
+        level: 3,
+        note: 0,
+        chord: "M7",
+        range: "bass",
+        layout: 2,
+      }).map((n) => midiLabel(n)),
+    ).toEqual(["C2", "E3", "G3", "B3"]);
+    for (let note = 0; note < 12; note++)
+      for (const chord of CHORD_KINDS) {
+        const pitches = questionPitches({
+          level: 3,
+          note,
+          chord,
+          range: "bass",
+          layout: 2,
+        });
+        expect(pitches[0]).toBe(pitchMidi(note, "bass", 2));
+        expect(pitches.slice(1).map((n) => n - pitches[0])).toEqual(
+          CHORDS[chord].slice(1).map((n) => n + 12),
+        );
+      }
+  });
+  it("keeps legacy sound, review identities and JSON separate from the new layout", async () => {
+    const { questionPitches } = await import("../src/model");
+    const old = { level: 1 as const, note: 7, range: "high" as const };
+    const current = { ...old, layout: 2 as const };
+    expect(questionPitches(old)).toEqual([67]);
+    expect(questionPitches(current)).toEqual([55]);
+    expect(questionKey(old)).not.toBe(questionKey(current));
+    let d = { ...empty(), sessions: [session(1)] };
+    d = record(d, attempt({ note: 7, answer: 0 }));
+    d.sessions.push({ ...session(1), id: "new", layout: 2 });
+    d = record(
+      d,
+      attempt({
+        id: "new-answer",
+        sessionId: "new",
+        note: 7,
+        answer: 0,
+        layout: 2,
+      }),
+    );
+    expect(d.reviews).toHaveLength(2);
+    expect(validate(JSON.parse(JSON.stringify(d)))).toEqual(d);
+  });
+  it("does not invent a high-range duplicate from a bass-only legacy mistake", async () => {
+    const { migrateReviews } = await import("../src/model");
+    const d = {
+      ...empty(),
+      sessions: [session(1)],
+      reviews: [
+        {
+          note: 9,
+          first: "2026-10-24T00:01:00Z",
+          last: "2026-10-24T00:01:00Z",
+          count: 1,
+          pending: true,
+        },
+      ],
+    };
+    d.sessions[0].attempts = [attempt({ note: 9, answer: 0 })];
+    const upgraded = migrateReviews(validate(d));
+    expect(upgraded.reviews).toHaveLength(1);
+    expect(upgraded.reviews[0].range).toBe("bass");
   });
 });
