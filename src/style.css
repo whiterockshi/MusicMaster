@@ -474,3 +474,21 @@ fieldset {
     font-size: 23px;
   }
 }
+
+.chart-scroll {
+  overflow-x: auto;
+}
+.accuracy-chart svg {
+  min-width: 650px;
+  max-height: none;
+  display: block;
+  font-size: 13px;
+}
+.accuracy-chart h3 {
+  margin-top: 0;
+  font-size: 17px;
+}
+.chart-scroll:focus-visible {
+  outline: 3px solid #ab742f;
+  outline-offset: 3px;
+}

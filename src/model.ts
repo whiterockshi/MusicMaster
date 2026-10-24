@@ -397,3 +397,35 @@ export function migrateReviews(data: Data): Data {
   }
   return d;
 }
+
+export function spokenNote(note: number, notation: "sharp" | "flat") {
+  const sharp = [
+    "ド",
+    "ドシャープ",
+    "レ",
+    "レシャープ",
+    "ミ",
+    "ファ",
+    "ファシャープ",
+    "ソ",
+    "ソシャープ",
+    "ラ",
+    "ラシャープ",
+    "シ",
+  ];
+  const flat = [
+    "ド",
+    "レフラット",
+    "レ",
+    "ミフラット",
+    "ミ",
+    "ファ",
+    "ソフラット",
+    "ソ",
+    "ラフラット",
+    "ラ",
+    "シフラット",
+    "シ",
+  ];
+  return (notation === "flat" ? flat : sharp)[note];
+}
